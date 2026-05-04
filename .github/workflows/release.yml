@@ -25,6 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: write   # to dispatch publish for the new tag
     concurrency:
       group: cairns-release-main
       cancel-in-progress: false
@@ -69,7 +70,7 @@ jobs:
       - name: Trigger publish for new tag
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh workflow run release.yml -f tag="${{ steps.bump.outputs.tag }}"
+        run: gh workflow run release.yml --ref "${{ steps.bump.outputs.tag }}" -f tag="${{ steps.bump.outputs.tag }}"
 
   publish:
     name: Publish to PyPI
