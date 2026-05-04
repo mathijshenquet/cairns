@@ -96,7 +96,7 @@ def _encode_ref(name: str, value: Any, _seen: dict[int, str]) -> str:
         return f"{name}=<class:{module}:{qualname}>"
     if inspect.isfunction(value) or inspect.ismethod(value):
         sub = StepInfo.from_function(value, _seen=_seen)
-        return f"{name}={sub.version}"
+        return f"{name}={sub.body_hash}"
     if inspect.isbuiltin(value):
         module = getattr(value, "__module__", "?")
         qualname = getattr(value, "__qualname__", getattr(value, "__name__", "?"))
@@ -167,13 +167,16 @@ class StepInfo:
     """Identification of a step: a nominal name + a structural fingerprint.
 
     `name` answers "what function is this?" (module:qualname by default, stable
-    across edits). `version` answers "which implementation?" — a sha256 digest
-    over source + resolved refs. `cairn_id(args)` combines name+args to address
-    the cairn stack; version is stored per-record and filtered at recall time.
+    across edits). `body_hash` answers "which implementation?" — a sha256 digest
+    over source + resolved refs, always auto-computed. `version` is an optional
+    user-declared release string (e.g. semver), free-form. `cairn_id(args)`
+    combines name+args to address the cairn stack; both body_hash and version
+    are stored per-record and used at recall time by the memo predicate.
     """
 
     name: str
-    version: str
+    body_hash: str
+    version: str | None = None
 
     @classmethod
     def from_function(
@@ -181,17 +184,24 @@ class StepInfo:
         fn: object,
         *,
         name: str | None = None,
+        body_hash: str | None = None,
         version: str | None = None,
         _seen: dict[int, str] | None = None,
     ) -> StepInfo:
-        """Derive StepInfo from fn. `name` / `version` override their derivation.
+        """Derive StepInfo from fn. `name` / `body_hash` override their derivation;
+        `version` is purely user-supplied (no derivation).
 
         Respects a pre-attached `.info` (how @step wrappers expose their, possibly
         user-overridden, info to downstream hashers like `_hash_partial`).
         Decorators are peeled via `inspect.unwrap` so the real body is hashed.
         """
         existing = getattr(fn, "info", None)
-        if isinstance(existing, StepInfo) and name is None and version is None:
+        if (
+            isinstance(existing, StepInfo)
+            and name is None
+            and body_hash is None
+            and version is None
+        ):
             return existing
 
         try:
@@ -204,19 +214,20 @@ class StepInfo:
             qualname = getattr(unwrapped, "__qualname__", getattr(unwrapped, "__name__", "<unknown>"))
             name = f"{module}:{qualname}"
 
-        if version is None:
-            version = _derive_body_fingerprint(unwrapped, _seen)
+        if body_hash is None:
+            body_hash = _derive_body_fingerprint(unwrapped, _seen)
 
-        return cls(name, version)
+        return cls(name, body_hash, version)
 
-    def short_version(self) -> str:
-        return self.version[:8]
+    def short_body_hash(self) -> str:
+        return self.body_hash[:8]
 
     def cairn_id(self, args: dict[str, Any]) -> str:
         return compute_cairn_id(self.name, args)
 
     def __repr__(self) -> str:
-        return f"StepInfo({self.name!r}, version={self.short_version()})"
+        ver = f", version={self.version!r}" if self.version is not None else ""
+        return f"StepInfo({self.name!r}, body_hash={self.short_body_hash()}{ver})"
 
 
 @dataclass
@@ -254,6 +265,8 @@ class Record:
     child_refs: list[dict[str, str]] = field(default_factory=lambda: [])
     origin: Origin = "recalled"
     tags: dict[str, str] = field(default_factory=lambda: {})
+    body_hash: str | None = None
+    version: str | None = None
 
 
 @dataclass(frozen=True)

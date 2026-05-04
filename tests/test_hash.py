@@ -170,26 +170,26 @@ def test_install_defaults_registers_path():
 # ── StepInfo.from_function ──
 
 
-def test_version_deterministic_across_calls():
+def test_body_hash_deterministic_across_calls():
     def f(a: int) -> int:
         return a + 1
 
     v1 = StepInfo.from_function(f)
     v2 = StepInfo.from_function(f)
-    assert v1.version == v2.version
+    assert v1.body_hash == v2.body_hash
 
 
-def test_version_changes_on_body_edit():
+def test_body_hash_changes_on_body_edit():
     def f1(a: int) -> int:
         return a + 1
 
     def f2(a: int) -> int:
         return a + 2
 
-    assert StepInfo.from_function(f1).version != StepInfo.from_function(f2).version
+    assert StepInfo.from_function(f1).body_hash != StepInfo.from_function(f2).body_hash
 
 
-def test_version_resolves_module_constant():
+def test_body_hash_resolves_module_constant():
     # A reference to a module-level value should show up in the version hash.
     MAGIC = 7  # noqa: N806 - named constant mimicked via local
 
@@ -206,13 +206,13 @@ def test_version_resolves_module_constant():
 
     # Their bodies differ only in the resolved name. But our AST walk records
     # the resolved value, so the hashes must differ.
-    assert StepInfo.from_function(uses_magic).version != StepInfo.from_function(uses_magic2).version
+    assert StepInfo.from_function(uses_magic).body_hash != StepInfo.from_function(uses_magic2).body_hash
 
 
 def test_stepinfo_trusts_attached_info():
     # A function with a pre-attached StepInfo (like @step) should return it
     # verbatim, respecting user overrides.
-    override = StepInfo(name="pinned", version="user-pinned-v1")
+    override = StepInfo(name="pinned", body_hash="user-pinned-v1")
 
     def inner() -> None:
         pass
@@ -221,7 +221,7 @@ def test_stepinfo_trusts_attached_info():
     assert StepInfo.from_function(inner) is override
 
 
-def test_version_unwraps_decorators():
+def test_body_hash_unwraps_decorators():
     import functools as ft
 
     def plain(a: int) -> int:
@@ -232,10 +232,10 @@ def test_version_unwraps_decorators():
         return plain(a)
 
     # unwrap should peel the wrapper and hash the plain body.
-    assert StepInfo.from_function(wrapper).version == StepInfo.from_function(plain).version
+    assert StepInfo.from_function(wrapper).body_hash == StepInfo.from_function(plain).body_hash
 
 
-def test_version_recursion_terminates_on_cycle():
+def test_body_hash_recursion_terminates_on_cycle():
     # Two module-level functions referencing each other via globals.
     # We simulate via a mutable container since real mutual recursion at
     # module level is the common case.
@@ -253,10 +253,10 @@ def test_version_recursion_terminates_on_cycle():
 
     # Should not infinite-loop.
     v = StepInfo.from_function(a)
-    assert isinstance(v.version, str)
+    assert isinstance(v.body_hash, str)
 
 
-def test_version_picks_up_imported_function_body_changes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_body_hash_picks_up_imported_function_body_changes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     # Simulates: `import other_module; def test(): return other_module.helper()`
     # Edit `helper`'s body, hash of `test` should change.
     import importlib
@@ -278,17 +278,17 @@ def test_version_picks_up_imported_function_body_changes(tmp_path: Path, monkeyp
     def test() -> int:
         return helper_mod.helper()
 
-    v1 = StepInfo.from_function(test).version
+    v1 = StepInfo.from_function(test).body_hash
 
     # Edit the imported module's function body.
     (pkg / "helper_mod.py").write_text("def helper():\n    return 999\n")
     importlib.reload(helper_mod)
 
-    v2 = StepInfo.from_function(test).version
+    v2 = StepInfo.from_function(test).body_hash
     assert v1 != v2, "body edit in imported helper should invalidate caller's version"
 
 
-def test_version_shared_helper_invalidates_all_callers():
+def test_body_hash_shared_helper_invalidates_all_callers():
     # A shared helper referenced by multiple peer functions within the same
     # top-level hash walk. Editing helper's body must invalidate every caller
     # — including peers whose AST walk sees helper AFTER a sibling has
@@ -321,13 +321,13 @@ def test_version_shared_helper_invalidates_all_callers():
     top_v2, peer_a_v2, peer_b_v2 = make_peers(make_helper(2))
 
     # Editing helper's body must change each peer's hash independently.
-    assert StepInfo.from_function(peer_a_v1).version != StepInfo.from_function(peer_a_v2).version
-    assert StepInfo.from_function(peer_b_v1).version != StepInfo.from_function(peer_b_v2).version
+    assert StepInfo.from_function(peer_a_v1).body_hash != StepInfo.from_function(peer_a_v2).body_hash
+    assert StepInfo.from_function(peer_b_v1).body_hash != StepInfo.from_function(peer_b_v2).body_hash
     # And the top-level caller.
-    assert StepInfo.from_function(top_v1).version != StepInfo.from_function(top_v2).version
+    assert StepInfo.from_function(top_v1).body_hash != StepInfo.from_function(top_v2).body_hash
 
 
-def test_version_duplicate_ref_within_one_call_reuses_hash():
+def test_body_hash_duplicate_ref_within_one_call_reuses_hash():
     # A function that references the same helper via two paths in a single
     # AST walk should not return <cycle> on the second encounter.
     def helper() -> int:
@@ -345,12 +345,12 @@ def test_version_duplicate_ref_within_one_call_reuses_hash():
     # Both refs resolve to the same function; expectation is both encode to
     # helper's hash, not one of them encoding as <cycle>.
     cycle_marker_hash = hashlib.sha256(b"<cycle>").hexdigest()
-    assert cycle_marker_hash not in v.version, (
+    assert cycle_marker_hash not in v.body_hash, (
         "duplicate reference to a non-cyclic function should not encode as <cycle>"
     )
 
 
-def test_version_sibling_ref_through_shared_helper_invalidates():
+def test_body_hash_sibling_ref_through_shared_helper_invalidates():
     # Realistic pattern: top() references peer_a and peer_b; both call helper.
     # When top is hashed, peer_a's AST walk visits helper first (correct),
     # then peer_b's AST walk sees helper already in _seen and encodes <cycle>.
@@ -379,10 +379,10 @@ def test_version_sibling_ref_through_shared_helper_invalidates():
     _, peer_b_v2 = make_graph(2)
     # peer_b isolated: should invalidate when helper body changes. This case
     # already works today (each top-level from_function has its own _seen).
-    assert StepInfo.from_function(peer_b_v1).version != StepInfo.from_function(peer_b_v2).version
+    assert StepInfo.from_function(peer_b_v1).body_hash != StepInfo.from_function(peer_b_v2).body_hash
 
 
-def test_version_no_source_fallback_is_deterministic():
+def test_body_hash_no_source_fallback_is_deterministic():
     # Build two lambdas with identical bytecode via compile(); compare hashes.
     # Lambdas defined in tests usually have source, so we use a code object
     # built via compile() to simulate the no-source path.
@@ -391,7 +391,7 @@ def test_version_no_source_fallback_is_deterministic():
     f2 = eval(compile(src, "<string>", "eval"))
     # inspect.getsource fails on these; we fall back to co_code which is
     # deterministic for identical source.
-    assert StepInfo.from_function(f1).version == StepInfo.from_function(f2).version
+    assert StepInfo.from_function(f1).body_hash == StepInfo.from_function(f2).body_hash
 
 
 # ── Pydantic integration (optional dependency) ──

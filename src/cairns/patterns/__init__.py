@@ -34,7 +34,7 @@ def replayable(fn: Callable[P, Awaitable[R]]) -> Callable[P, Handle[R]]:
         return await fn(*args, **kwargs)
 
     info = StepInfo.from_function(fn)
-    return step(wrapper, memo=False, identity=info.name, version=info.version)
+    return step(wrapper, memo=False, identity=info.name, body_hash=info.body_hash, version=info.version)
 
 
 def rate_limited(n: int, memo: bool = False) -> Callable[[Callable[P, Awaitable[R]]], Callable[P, Handle[R]]]:
@@ -53,6 +53,6 @@ def rate_limited(n: int, memo: bool = False) -> Callable[[Callable[P, Awaitable[
                 return await fn(*args, **kwargs)
 
         info = StepInfo.from_function(fn)
-        return step(wrapper, memo=memo, identity=info.name, version=info.version)
+        return step(wrapper, memo=memo, identity=info.name, body_hash=info.body_hash, version=info.version)
 
     return decorator

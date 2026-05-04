@@ -47,20 +47,25 @@ class Cairn:
         return next(iter(self), None) is not None
 
     def latest(
-        self, *, version: str | None = None, include_errors: bool = False
+        self,
+        *,
+        version: str | None = None,
+        body_hash: str | None = None,
+        include_errors: bool = False,
     ) -> Record | None:
-        """Newest record. By default skips errors and matches `cache.get`'s
-        resolution semantics. Pass `include_errors=True` to surface the
-        most recent regardless of error status.
+        """Newest record matching the given filters.
+
+        `version` / `body_hash` constrain on the corresponding fields when set.
+        By default skips errored records — pass `include_errors=True` to
+        surface the most recent regardless.
         """
         for record in self:
             if record.error is not None and not include_errors:
                 continue
-            if version is not None:
-                # version isn't on Record yet — record_id ordering carries it
-                # implicitly via uuid7 timestamp + metadata version field.
-                # If/when needed, tag-based version filter is the path.
-                pass
+            if version is not None and record.version != version:
+                continue
+            if body_hash is not None and record.body_hash != body_hash:
+                continue
             return record
         return None
 

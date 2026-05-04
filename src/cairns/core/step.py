@@ -10,6 +10,7 @@ from typing import Any, Awaitable, Callable, Generator, Generic, Literal, ParamS
 
 from .runtime import current_run, current_span, emit_event
 from .store import (
+    Predicate,
     Store,
     child_record_path,
     iter_record_events,
@@ -28,7 +29,7 @@ R = TypeVar("R")
 class Handle(Generic[R]):
     """Awaitable reference to a running step's eventual result."""
 
-    def __init__(self, span: TaskSpan, task: asyncio.Task[R], args_summary: str = "", memo: bool = False) -> None:
+    def __init__(self, span: TaskSpan, task: asyncio.Task[R], args_summary: str = "", memo: bool | Predicate = False) -> None:
         self._span = span
         self._task = task
         emit_event(
@@ -38,9 +39,10 @@ class Handle(Generic[R]):
             name=span.name,
             kwargs={
                 "identity": span.info.name,
-                "version": span.info.short_version(),
+                "body_hash": span.info.short_body_hash(),
+                "version": span.info.version,
                 "args": args_summary,
-                "memo": memo,
+                "memo": bool(memo),
             },
         )
 
@@ -412,8 +414,9 @@ def _publish_success(
             duration=wall,
             own_duration=own_time,
             tags=dict(tags or {}),
+            body_hash=info.body_hash,
+            version=info.version,
         ),
-        version=info.version,
         metadata={
             "short_name": span.name,
             "children": child_refs,
@@ -465,8 +468,9 @@ def _publish_error(
             duration=wall,
             own_duration=own_time,
             tags=dict(tags or {}),
+            body_hash=info.body_hash,
+            version=info.version,
         ),
-        version=info.version,
         metadata={
             "short_name": span.name,
             "children": child_refs,
@@ -494,7 +498,7 @@ StrOverride = str | Callable[..., str] | None
 
 
 def _resolve_override(arg: StrOverride, fn: object) -> str | None:
-    """Turn an `identity=` or `version=` kwarg into a string override (or None
+    """Turn an `identity=` or `body_hash=` kwarg into a string override (or None
     to mean "derive from fn")."""
     if arg is None:
         return None
@@ -502,6 +506,24 @@ def _resolve_override(arg: StrOverride, fn: object) -> str | None:
         return arg
     if callable(arg):
         return arg(fn)
+    return None
+
+
+def _resolve_memo_predicate(memo: bool | Predicate, info: StepInfo) -> Predicate | None:
+    """Predicate that decides which prior record counts as a memo hit.
+
+    `memo=False`  → None (any non-error record; powers prefill but not replay).
+    `memo=True`   → match by `version` if declared, else `body_hash`.
+    `memo=callable` → user-supplied predicate, used verbatim.
+    """
+    if callable(memo):
+        return memo
+    if memo is True:
+        if info.version is not None:
+            target = info.version
+            return lambda r: r.version == target
+        target_hash = info.body_hash
+        return lambda r: r.body_hash == target_hash
     return None
 
 
@@ -521,9 +543,10 @@ def step(fn: Callable[P, Awaitable[R]]) -> Callable[P, Handle[R]]: ...
 def step(
     fn: Callable[P, Awaitable[R]],
     *,
-    memo: bool = ...,
+    memo: bool | Predicate = ...,
     identity: StrOverride = ...,
-    version: StrOverride = ...,
+    body_hash: StrOverride = ...,
+    version: str | None = ...,
     tags: dict[str, str] | None = ...,
 ) -> Callable[P, Handle[R]]: ...
 
@@ -531,9 +554,10 @@ def step(
 @overload
 def step(
     *,
-    memo: bool = ...,
+    memo: bool | Predicate = ...,
     identity: StrOverride = ...,
-    version: StrOverride = ...,
+    body_hash: StrOverride = ...,
+    version: str | None = ...,
     tags: dict[str, str] | None = ...,
 ) -> Callable[[Callable[P, Awaitable[R]]], Callable[P, Handle[R]]]: ...
 
@@ -541,47 +565,60 @@ def step(
 def step(
     fn: Callable[..., Awaitable[Any]] | None = None,
     *,
-    memo: bool = False,
+    memo: bool | Predicate = False,
     identity: StrOverride = None,
-    version: StrOverride = None,
+    body_hash: StrOverride = None,
+    version: str | None = None,
     tags: dict[str, str] | None = None,
 ) -> Any:
     """Decorator that turns an async function into a tracked step.
 
     By default, the step always runs (memo=False) — suitable for orchestration.
-    Use memo=True for expensive leaf operations (API calls, heavy computation)
-    to cache results based on (identity, version, args).
+    Use memo=True for expensive leaf operations (API calls, heavy computation):
+    a memo hit replays the most recent record matching the step's identity.
 
-    `identity` / `version` override the derived name / version as strings. To
-    forward an existing `StepInfo` through a higher-order wrapper, pass
-    `identity=info.name, version=info.version`.
+    Memo matching:
+      memo=True  — match by `version` if declared, else by `body_hash`.
+      memo=False — never short-circuit; record/replay only via carry overlay.
+      memo=Callable[[Record], bool] — custom predicate over prior records.
+                                      Most general form; you pick the rule.
 
-    `tags` is a free-form `dict[str, str]` written into every record this
-    step publishes. Patterns can filter the cairn by tags (e.g. semver
-    matching). Common uses: `tags={"semver": "1.2.3"}`, `tags={"env": "prod"}`.
+    `version` is a free-form user-declared release string (e.g. "1.2.3"). When
+    set, edits to the function body don't bust the cache; bumping `version`
+    does. Without `version`, the auto-computed `body_hash` (sha256 over source
+    + resolved refs) is the invalidation key.
+
+    `identity` overrides the derived name (module:qualname). `body_hash`
+    overrides the derived structural digest — primarily for higher-order
+    wrappers that want to forward an inner step's identity verbatim.
+
+    `tags` is a free-form `dict[str, str]` written into every record. Useful
+    for downstream filtering (e.g. `tags={"env": "prod"}`).
 
     Returns Handle[T] on call instead of awaiting directly.
     """
     if fn is None:
         def decorator(f: Callable[P, Awaitable[R]]) -> Callable[P, Handle[R]]:
-            return _make_step(f, memo=memo, identity=identity, version=version, tags=tags)
+            return _make_step(f, memo=memo, identity=identity, body_hash=body_hash, version=version, tags=tags)
         return decorator
 
-    return _make_step(fn, memo=memo, identity=identity, version=version, tags=tags)
+    return _make_step(fn, memo=memo, identity=identity, body_hash=body_hash, version=version, tags=tags)
 
 
 def _make_step(
     fn: Callable[..., Awaitable[Any]],
     *,
-    memo: bool,
+    memo: bool | Predicate,
     identity: StrOverride,
-    version: StrOverride,
+    body_hash: StrOverride,
+    version: str | None,
     tags: dict[str, str] | None,
 ) -> Any:
     _info = StepInfo.from_function(
         fn,
         name=_resolve_override(identity, fn),
-        version=_resolve_override(version, fn),
+        body_hash=_resolve_override(body_hash, fn),
+        version=version,
     )
 
     @functools.wraps(fn)
@@ -608,7 +645,8 @@ def _make_step(
                 # Stash cairn_id on the span early so `cairn()` works inside
                 # the body even before publish.
                 span.cairn_id = key
-                cached = store.get(key, version=_info.version)
+                predicate = _resolve_memo_predicate(memo, _info)
+                cached = store.find(key, predicate)
 
                 # Populate span's cached_* fields regardless of memo — they
                 # feed `cached_output()` / `cached_tracing()` from inside the
@@ -617,7 +655,7 @@ def _make_step(
                     span.cached_output_value = cached.result
                     span.cached_tracing_value = cached.traces
                     # Carry-origin hits short-circuit regardless of memo;
-                    # memo=True takes any recalled hit as usual.
+                    # memo (bool or predicate) takes a hit as usual.
                     if memo or cached.origin == "carried":
                         return _replay_cached(span, cached)
 

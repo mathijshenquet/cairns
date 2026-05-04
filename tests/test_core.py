@@ -456,6 +456,83 @@ async def test_version_change_invalidates_cache():
         assert call_count == 2
 
 
+@pytest.mark.asyncio
+async def test_version_pins_cache_against_body_edits():
+    """A declared version makes the memo predicate ignore body_hash changes."""
+    call_count = 0
+
+    @step(memo=True, version="1.0.0")
+    async def compute(x: int) -> int:
+        nonlocal call_count
+        call_count += 1
+        return x * 2
+
+    async with Harness() as rt:
+        assert await compute(5) == 10
+        assert call_count == 1
+
+        # Same identity + version, but a forced body_hash change. Without
+        # version pinning the body_hash mismatch would force re-execution;
+        # because version is declared, the memo predicate matches by version
+        # and the cache hits.
+        compute_v2 = step(
+            compute.__wrapped__,
+            memo=True,
+            body_hash="forced-different-body-hash",
+            version="1.0.0",
+        )
+        assert await compute_v2(5) == 10
+        assert call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_memo_predicate_picks_first_match():
+    """memo=callable: first record where predicate(record) is True wins.
+
+    Stack the same cairn (identity + args) with three versions, then use a
+    predicate to recall the middle one — proving the predicate, not recency,
+    drives selection.
+    """
+    payloads = {"v1": "a", "v2": "b", "v3": "c"}
+
+    async with Harness() as rt:
+        for ver in ("v1", "v2", "v3"):
+            captured = payloads[ver]
+
+            async def _seed() -> str:
+                return captured  # noqa: B023 — closure capture is intentional
+
+            s = step(_seed, memo=True, identity="emit", version=ver)
+            await s()
+
+        @step(memo=lambda r: r.version == "v2", identity="emit")
+        async def picker() -> str:
+            return "fresh"  # would only run on cache miss
+
+        assert await picker() == "b"
+
+
+@pytest.mark.asyncio
+async def test_memo_predicate_falls_through_to_execute():
+    """memo=callable with no matching record → step body runs."""
+    call_count = 0
+
+    @step(memo=lambda r: r.version == "never-stored")
+    async def compute(x: int) -> int:
+        nonlocal call_count
+        call_count += 1
+        return x + 1
+
+    async with Harness() as rt:
+        assert await compute(5) == 6
+        # Predicate didn't match anything (no records yet) → executed.
+        assert call_count == 1
+        # Run again — the just-stored record has version=None, predicate still
+        # fails to match, so we execute again.
+        assert await compute(5) == 6
+        assert call_count == 2
+
+
 # ── Edge annotations ──
 
 

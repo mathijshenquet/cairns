@@ -14,11 +14,13 @@ import os
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Any, Iterator, Protocol, cast
+from typing import Any, Callable, Iterator, Protocol, cast
 
 from .lock import store_shared
 from .serial import from_jsonable, to_jsonable
 from .types import Record, TraceRecord
+
+Predicate = Callable[[Record], bool]
 
 _MISSING = object()
 
@@ -50,14 +52,19 @@ class RecordInfo:
 class Store(Protocol):
     """Protocol for cache storage backends."""
 
-    def get(self, key: str, version: str | None = None) -> Record | None: ...
+    def find(self, key: str, predicate: Predicate | None = None) -> Record | None:
+        """Newest non-error record for `key` matching `predicate`. None if no match.
+
+        `predicate=None` means "any non-error record" (used for prefill when
+        memo=False so cached_output() can return the latest known result).
+        """
+        ...
 
     def put(
         self,
         key: str,
         entry: Record,
         *,
-        version: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> StoreStats: ...
 
@@ -65,8 +72,7 @@ class Store(Protocol):
         """Yield all records for `cairn_id`, newest-first.
 
         Backs `Cairn` inspection. Errored records are included (consumers
-        filter as needed). MRO: same content shape as `get` but doesn't
-        skip errors or apply the `version` filter.
+        filter as needed).
         """
         ...
 
@@ -111,25 +117,19 @@ def _hash_payload(payload: str) -> str:
 # ── In-memory store ──
 
 
-@dataclass
-class _MemRecord:
-    entry: Record
-    version: str | None
-
-
 class MemoryStore:
     """In-memory cairn stack for testing."""
 
     def __init__(self) -> None:
-        self._stacks: dict[str, list[_MemRecord]] = {}
+        self._stacks: dict[str, list[Record]] = {}
 
-    def get(self, key: str, version: str | None = None) -> Record | None:
-        for record in reversed(self._stacks.get(key, [])):
-            if record.entry.error is not None:
+    def find(self, key: str, predicate: Predicate | None = None) -> Record | None:
+        for entry in reversed(self._stacks.get(key, [])):
+            if entry.error is not None:
                 continue
-            if version is not None and record.version != version:
+            if predicate is not None and not predicate(entry):
                 continue
-            return record.entry
+            return entry
         return None
 
     def put(
@@ -137,7 +137,6 @@ class MemoryStore:
         key: str,
         entry: Record,
         *,
-        version: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> StoreStats:
         md = metadata or {}
@@ -149,7 +148,7 @@ class MemoryStore:
         payload = _result_payload(entry)
         result_hash = None if entry.error else _hash_payload(payload)
         entry.result_hash = result_hash
-        self._stacks.setdefault(key, []).append(_MemRecord(entry=entry, version=version))
+        self._stacks.setdefault(key, []).append(entry)
         size = len(payload.encode("utf-8"))
         return StoreStats(
             size=size,
@@ -160,8 +159,8 @@ class MemoryStore:
         )
 
     def iter_records(self, cairn_id: str) -> Iterator[Record]:
-        for record in reversed(self._stacks.get(cairn_id, [])):
-            yield record.entry
+        for entry in reversed(self._stacks.get(cairn_id, [])):
+            yield entry
 
 
 # ── File-backed store ──
@@ -328,6 +327,8 @@ def load_record(record_path: str) -> Record | None:
         result_hash=meta.get("result_hash"),
         child_refs=list(meta.get("children", []) or []),
         tags=dict(meta.get("tags", {}) or {}),
+        body_hash=meta.get("body_hash"),
+        version=meta.get("version"),
     )
 
 
@@ -361,7 +362,7 @@ class FileStore:
 
     # ── read ──
 
-    def get(self, key: str, version: str | None = None) -> Record | None:
+    def find(self, key: str, predicate: Predicate | None = None) -> Record | None:
         cairn_dir = os.path.join(self._cairns, key)
         if not os.path.isdir(cairn_dir):
             return None
@@ -373,8 +374,6 @@ class FileStore:
             if meta is None:
                 continue
             if meta.get("error") is not None:
-                continue
-            if version is not None and meta.get("version") != version:
                 continue
             if not _children_resolve(record):
                 continue
@@ -394,7 +393,11 @@ class FileStore:
                 result_hash=meta.get("result_hash"),
                 child_refs=list(meta.get("children", []) or []),
                 tags=dict(meta.get("tags", {}) or {}),
+                body_hash=meta.get("body_hash"),
+                version=meta.get("version"),
             )
+            if predicate is not None and not predicate(entry):
+                continue
             return entry
         return None
 
@@ -432,6 +435,8 @@ class FileStore:
                 result_hash=meta.get("result_hash"),
                 child_refs=list(meta.get("children", []) or []),
                 tags=dict(meta.get("tags", {}) or {}),
+                body_hash=meta.get("body_hash"),
+                version=meta.get("version"),
             )
 
     # ── write ──
@@ -441,7 +446,6 @@ class FileStore:
         key: str,
         entry: Record,
         *,
-        version: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> StoreStats:
         md = metadata or {}
@@ -455,7 +459,6 @@ class FileStore:
             return self._put_locked(
                 key=key,
                 entry=entry,
-                version=version,
                 md=md,
                 children=children,
                 events_stream=events_stream,
@@ -466,7 +469,6 @@ class FileStore:
         *,
         key: str,
         entry: Record,
-        version: str | None,
         md: dict[str, Any],
         children: list[dict[str, Any]],
         events_stream: list[dict[str, Any]],
@@ -495,7 +497,8 @@ class FileStore:
         meta = {
             "cairn_id": key,
             "origin": md.get("origin", "created"),
-            "version": version,
+            "body_hash": entry.body_hash,
+            "version": entry.version,
             "duration": entry.duration,
             "own_duration": entry.own_duration,
             "error": str(entry.error) if entry.error else None,
@@ -579,8 +582,8 @@ class FileStore:
 class OverlayStore:
     """Read-overlay over a base Store, keyed by cairn_id → record path.
 
-    Hits in the overlay short-circuit to the referenced record, bypassing both
-    the version filter and the subtree-integrity check — carry is an explicit
+    Hits in the overlay short-circuit to the referenced record, bypassing the
+    memo predicate and the subtree-integrity check — carry is an explicit
     opt-in by the caller. Writes pass through to the base store unchanged.
 
     A missing record at an overlay path raises `FileNotFoundError`. Carry is
@@ -591,10 +594,10 @@ class OverlayStore:
         self._overlay = dict(overlay)
         self._base = base
 
-    def get(self, key: str, version: str | None = None) -> Record | None:
+    def find(self, key: str, predicate: Predicate | None = None) -> Record | None:
         path = self._overlay.get(key)
         if path is None:
-            return self._base.get(key, version)
+            return self._base.find(key, predicate)
         entry = load_record(path)
         if entry is None:
             raise FileNotFoundError(
@@ -608,10 +611,9 @@ class OverlayStore:
         key: str,
         entry: Record,
         *,
-        version: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> StoreStats:
-        return self._base.put(key, entry, version=version, metadata=metadata)
+        return self._base.put(key, entry, metadata=metadata)
 
     def iter_records(self, cairn_id: str) -> Iterator[Record]:
         # Carry is a read-time detour, not history. Inspection sees the
