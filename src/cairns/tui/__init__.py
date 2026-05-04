@@ -13,12 +13,18 @@ The public surface is `run_app` / `browse` plus the `CairnsApp` class.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
+
+from cairns.core import Handle
 
 from .app import CairnsApp
 
 
-def run_app(entry_fn: Any, store_path: str = ".cairns", label: str = "main") -> None:
+def run_app(
+    entry_fn: Callable[..., Handle[Any]],
+    store_path: str = ".cairns",
+    label: str = "main",
+) -> None:
     app = CairnsApp(store_path, entry_fn=entry_fn, label=label)
     app.run()
 

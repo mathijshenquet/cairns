@@ -6,13 +6,15 @@ import asyncio
 import json
 import os
 from datetime import datetime, timezone
-from typing import Any, Callable, TypeVar
+from typing import Any, TypeVar
 
 from cairns.core import Event, Handle, JSONLSink, OverlayStore
 from cairns.core.runtime import (
-    Runtime,
+    EndEvent,
     InteractionSink,
     Run,
+    Runtime,
+    SpawnEvent,
     default_runtime,
 )
 
@@ -37,14 +39,13 @@ class RunDirSink:
     def emit(self, event: Event) -> None:
         self._jsonl.emit(event)
 
-        if event.kind == "spawn" and event.seq is not None and event.name is not None:
+        if isinstance(event, SpawnEvent) and event.seq is not None and event.name:
             self._task_names[event.seq] = event.name
 
-        elif event.kind == "end" and event.seq is not None:
-            record_path: str | None = event.kwargs.get("record_path")
-            if record_path is not None:
+        elif isinstance(event, EndEvent) and event.seq is not None:
+            if event.record_path is not None:
                 name = self._task_names.get(event.seq, f"task-{event.seq}")
-                self._create_symlink(name, record_path)
+                self._create_symlink(name, event.record_path)
 
     def _create_symlink(self, name: str, record_path: str) -> None:
         self._step_ordinal += 1
@@ -179,51 +180,46 @@ def _resolve_runtime(
 
 
 def run(
-    entry: Callable[..., Handle[R]],
+    handle: Handle[R],
     *,
     store_path: str | None = None,
     label: str | None = None,
-    args: tuple[Any, ...] = (),
-    kwargs: dict[str, Any] | None = None,
     carry: dict[str, str] | None = None,
     interaction_sink: InteractionSink | None = None,
     runtime: Runtime | None = None,
 ) -> R:
     """Run a step pipeline as a file-backed entry point. Sync.
 
+    Pass an unconsumed `Handle` produced by calling a `@step` function
+    at top level — e.g. `run(pipeline(urls))`. Outside an active run,
+    `pipeline(urls)` returns a deferred Handle (it captures the call
+    without executing it); `run(...)` replays it inside the run context.
+
     Sets up the run directory under the runtime's `store_path`, wires a
     `RunDirSink`, and binds a `Run` to the active-run ContextVar for the
-    duration of `entry(*args, **kwargs)`. Calls `asyncio.run` internally
-    — for embedding inside an existing event loop use `arun(...)` (or
-    `runtime.arun(...)`).
+    duration of the pipeline. Calls `asyncio.run` internally — for
+    embedding inside an existing event loop use `arun(...)`.
 
-    `store_path=` is sugar for "build a fresh `Runtime` at this
-    path"; pass `runtime=` instead to use a configured Runtime (e.g.
-    one with custom hashers). The two are mutually exclusive.
-
-    `entry` may be a plain `async def` or a `@step`-decorated function.
-    Plain async entries aren't traced as their own span, but any
-    `@step` calls inside them are.
+    `store_path=` is sugar for "build a fresh `Runtime` at this path";
+    pass `runtime=` instead to use a configured Runtime (e.g. one with
+    custom hashers). The two are mutually exclusive.
     """
     rt = _resolve_runtime(runtime, store_path)
-    entry_label = label or getattr(entry, "__name__", "main")
+    entry_label = label or _handle_label(handle)
 
     async def _go() -> R:
         with _build_run(rt, entry_label, dict(carry or {}), interaction_sink):
-            handle = entry(*args, **(kwargs or {}))
-            result: R = await handle
-            return result
+            eager: Handle[R] = handle._consume()  # type: ignore[reportPrivateUsage]
+            return await eager
 
     return asyncio.run(_go())
 
 
 async def arun(
-    entry: Callable[..., Handle[R]],
+    handle: Handle[R],
     *,
     store_path: str | None = None,
     label: str | None = None,
-    args: tuple[Any, ...] = (),
-    kwargs: dict[str, Any] | None = None,
     carry: dict[str, str] | None = None,
     interaction_sink: InteractionSink | None = None,
     runtime: Runtime | None = None,
@@ -234,12 +230,17 @@ async def arun(
     Textual apps, aiohttp servers, Jupyter kernels.
     """
     rt = _resolve_runtime(runtime, store_path)
-    entry_label = label or getattr(entry, "__name__", "main")
+    entry_label = label or _handle_label(handle)
 
     with _build_run(rt, entry_label, dict(carry or {}), interaction_sink):
-        handle = entry(*args, **(kwargs or {}))
-        result: R = await handle
-        return result
+        eager: Handle[R] = handle._consume()  # type: ignore[reportPrivateUsage]
+        return await eager
+
+
+def _handle_label(handle: Handle[Any]) -> str:
+    """Extract a run label from a deferred Handle's captured fn name."""
+    fn = handle._fn  # type: ignore[reportPrivateUsage]
+    return getattr(fn, "__name__", "main") if fn is not None else "main"
 
 
 # Re-export gc + show for the public `cairns.run` surface.

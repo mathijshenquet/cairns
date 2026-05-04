@@ -20,7 +20,7 @@ frameworks, read [`patterns.md`](patterns.md).
 Everything else — retries, validation loops, fan-out/fan-in — is ordinary
 Python built on top of these.
 
-Entry points: `cairns.run(fn, store_path=".cairns")` programmatically, or
+Entry points: `cairns.run(fn(...), store_path=".cairns")` programmatically, or
 `cairns script.py` from the shell.
 
 ---
@@ -325,14 +325,21 @@ Nix-style. CLI: `cairn gc [--before YYYY-MM-DD]`.
 Programmatic:
 
 ```python
-from cairn import run
+from cairns import run
 
-result = run(pipeline, store_path=".cairns", args=(arg1,), kwargs={"k": v})
+result = run(pipeline(arg1, k=v), store_path=".cairns")
 ```
 
-`run()` spins up an event loop, creates a `RunManager` (output store + trace
-sink + run directory), sets contextvars, awaits the entry Handle, then
-closes the sink and updates the `latest` symlink.
+`run()` takes an unconsumed `Handle`. Calling a `@step` function at top level
+(no active run) returns a *deferred* Handle: it captures `(fn, args, kwargs)`
+without executing the body. `run()` enters a fresh run context and replays
+the captured call (which now goes eager since the run is active), awaits the
+resulting Handle, then closes the sink and updates the `latest` symlink.
+
+A deferred Handle that is dropped without being passed to `run()` warns
+via `__del__` (`ResourceWarning`), mirroring asyncio's "Task was destroyed
+but it is pending" UX. Inside an active run (or `Harness`), the same call
+produces an eager Handle that schedules an `asyncio.Task` immediately.
 
 CLI:
 

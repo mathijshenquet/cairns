@@ -21,7 +21,10 @@ import functools
 import hashlib
 import json
 from pathlib import Path
-from typing import Any, Callable, cast
+from typing import TYPE_CHECKING, Any, Callable, cast
+
+if TYPE_CHECKING:
+    from .runtime import Runtime
 
 
 def resolve_hashable(
@@ -167,7 +170,7 @@ def _hash_pydantic(model: Any) -> Any:
     }
 
 
-def install_defaults(runtime: Any) -> None:
+def install_defaults(runtime: "Runtime") -> None:
     """Install Path / functools.partial / Pydantic hashers on `runtime`."""
     runtime.hash_funcs[Path] = _hash_path
     runtime.hash_funcs[functools.partial] = _hash_partial

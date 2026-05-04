@@ -16,7 +16,7 @@ import importlib.util
 import os
 import sys
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 
 
 def _store_path(args: argparse.Namespace) -> str:
@@ -93,7 +93,7 @@ def cmd_run(script: str, entry_name: str, store: str, *, force: bool = False) ->
     spec.loader.exec_module(module)
 
     # Find the entry point: try explicit name, then 'main', then script basename
-    entry: Any = getattr(module, entry_name, None)
+    entry: Callable[..., Any] | None = getattr(module, entry_name, None)
     if entry is None and entry_name == "main":
         basename = os.path.splitext(os.path.basename(script))[0]
         entry = getattr(module, basename, None)
@@ -132,7 +132,9 @@ def cmd_run(script: str, entry_name: str, store: str, *, force: bool = False) ->
         print(f"Running {script}:{entry_name}", file=sys.stderr)
         print(f"Store: {store}/\n", file=sys.stderr)
         try:
-            result = cairn_run(entry, store_path=store, label=label)
+            # Entry is a @step or async function; calling it at top level
+            # outside a run yields a deferred Handle that cairn_run consumes.
+            result = cairn_run(entry(), store_path=store, label=label)
             print(f"\nResult: {result}", file=sys.stderr)
         except Exception as e:
             print(f"\nError: {e}", file=sys.stderr)
@@ -196,7 +198,7 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    commands: dict[str, Any] = {
+    commands: dict[str, Callable[[argparse.Namespace], None]] = {
         "list": cmd_list,
         "show": cmd_show,
         "output": cmd_output,

@@ -191,7 +191,7 @@ async def test_trace_emits_event():
         assert len(trace_events) == 2
         assert trace_events[0].message == "starting work"
         assert trace_events[1].message == "halfway"
-        assert trace_events[1].kwargs["progress"] == (1, 2)
+        assert trace_events[1].progress == (1, 2)
 
 
 @pytest.mark.asyncio
@@ -247,8 +247,8 @@ async def test_spawn_and_wait_events():
         span_waits = [
             w for w in waits
             if w.seq == parent_span.seq
-            and w.kwargs.get("on", {}).get("kind") == "span"
-            and w.kwargs.get("on", {}).get("seq") == child_span.seq
+            and w.on_kind == "span"
+            and w.on_seq == child_span.seq
         ]
         assert len(span_waits) == 1
 
@@ -274,7 +274,7 @@ async def test_fanout_detected_in_trace():
         root_waits = [
             w for w in rt.trace.events(kind="wait")
             if w.seq == root_span.seq
-            and w.kwargs.get("on", {}).get("kind") == "span"
+            and w.on_kind == "span"
         ]
 
         # 5 spawns happened before any waits
@@ -698,7 +698,7 @@ async def test_edge_annotation():
         edges = rt.trace.edge_annotations("parent")
         assert len(edges) == 1
         assert edges[0].message == "transition"
-        assert edges[0].kwargs["detail"] == "moving on"
+        assert edges[0].detail == "moving on"
 
 
 # ── Hash funcs registry ──
@@ -836,3 +836,76 @@ async def test_research_pipeline():
         # Only pipeline + 3 research_validated + inner steps should be cached
         # No new real executions
         assert rt.trace.cached_count() > 0
+
+
+# ── Deferred Handle (top-level @step calls) ──
+
+
+def test_top_level_call_is_deferred():
+    """Calling a @step at top level (no active run) returns a deferred Handle
+    that captures (fn, args, kwargs) without executing the body."""
+    executed = []
+
+    @step
+    async def task(x: int) -> int:
+        executed.append(x)
+        return x * 2
+
+    handle = task(5)
+    assert isinstance(handle, Handle)
+    assert handle.is_deferred
+    assert executed == []  # body has not run yet
+
+    # Mark consumed so __del__ doesn't warn.
+    handle._consumed = True
+
+
+def test_deferred_handle_drop_warns():
+    """A deferred Handle dropped without being passed to run() emits a
+    ResourceWarning (mirrors asyncio's 'Task was destroyed' warning)."""
+    import gc
+    import warnings
+
+    @step
+    async def task() -> int:
+        return 1
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        _ = task()
+        # Drop the local reference; force a GC pass.
+        del _
+        gc.collect()
+
+    drop_warnings = [w for w in caught if issubclass(w.category, ResourceWarning)]
+    assert len(drop_warnings) == 1
+    assert "task" in str(drop_warnings[0].message)
+
+
+@pytest.mark.asyncio
+async def test_deferred_handle_await_outside_run_raises():
+    """Awaiting a deferred Handle outside an active run is an error."""
+
+    @step
+    async def task() -> int:
+        return 1
+
+    handle = task()
+    assert handle.is_deferred
+    with pytest.raises(RuntimeError, match="deferred Handle"):
+        await handle
+    handle._consumed = True  # silence drop warning
+
+
+@pytest.mark.asyncio
+async def test_handle_is_eager_inside_run():
+    """Inside an active run the same call yields an eager (non-deferred) Handle."""
+
+    @step
+    async def task() -> int:
+        return 42
+
+    async with Harness():
+        handle = task()
+        assert not handle.is_deferred
+        assert await handle == 42

@@ -132,7 +132,7 @@ main = pipeline
 
 if __name__ == "__main__":
     print(f"Researching {len(COMPANIES)} AI companies via Claude Haiku...")
-    result = run(pipeline, store_path=".cairns")
+    result = run(pipeline(), store_path=".cairns")
     week = result["week"]
     landscape = result["landscape"]
     companies: dict[str, dict[str, str]] = result["companies"]  # type: ignore[assignment]

@@ -77,7 +77,7 @@ if __name__ == "__main__":
 
     t0 = time.monotonic()
     try:
-        results = run(pipeline, store_path=".cairns")
+        results = run(pipeline(), store_path=".cairns")
         t1 = time.monotonic()
         print(f"\nPipeline completed in {t1 - t0:.2f}s:")
         for r in results:

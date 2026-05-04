@@ -3,9 +3,22 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Callable, Literal, Sequence, overload
 
-from cairns.core.runtime import Runtime, Event, MemorySink, Run
+from cairns.core.runtime import (
+    CancelEvent,
+    EndEvent,
+    ErrorEvent,
+    Event,
+    MemorySink,
+    ResumeEvent,
+    Run,
+    Runtime,
+    SpawnEvent,
+    StartEvent,
+    TraceEvent,
+    WaitEvent,
+)
 from cairns.core.store import MemoryStore
 
 
@@ -33,30 +46,52 @@ class TraceInspector:
         """All events in order."""
         return list(self._sink.events)
 
-    def events(self, kind: str) -> list[Event]:
-        """Get all events of a given kind."""
+    @overload
+    def events(self, kind: Literal["spawn"]) -> Sequence[SpawnEvent]: ...
+    @overload
+    def events(self, kind: Literal["start"]) -> Sequence[StartEvent]: ...
+    @overload
+    def events(self, kind: Literal["end"]) -> Sequence[EndEvent]: ...
+    @overload
+    def events(self, kind: Literal["wait"]) -> Sequence[WaitEvent]: ...
+    @overload
+    def events(self, kind: Literal["resume"]) -> Sequence[ResumeEvent]: ...
+    @overload
+    def events(self, kind: Literal["trace"]) -> Sequence[TraceEvent]: ...
+    @overload
+    def events(self, kind: Literal["error"]) -> Sequence[ErrorEvent]: ...
+    @overload
+    def events(self, kind: Literal["cancel"]) -> Sequence[CancelEvent]: ...
+    @overload
+    def events(self, kind: str) -> Sequence[Event]: ...
+    def events(self, kind: str) -> Sequence[Event]:
+        """Get all events of a given kind. Overloads narrow to the kind."""
         return [e for e in self._sink.events if e.kind == kind]
 
     def span(self, name: str) -> SpanInfo:
         """Find a span by step name. Returns the first match."""
-        spawns = [e for e in self._sink.events if e.kind == "spawn" and e.name == name]
+        spawns = [
+            e for e in self._sink.events
+            if isinstance(e, SpawnEvent) and e.name == name
+        ]
         if not spawns:
             raise KeyError(f"No span found with name {name!r}")
         spawn = spawns[0]
         span_seq = spawn.seq
         assert span_seq is not None
 
-        ends = [e for e in self._sink.events if e.kind == "end" and e.seq == span_seq]
+        ends = [
+            e for e in self._sink.events
+            if isinstance(e, EndEvent) and e.seq == span_seq
+        ]
         end_ts = ends[0].ts if ends else 0.0
-        cached = ends[0].cached if ends and ends[0].cached is not None else False
-
-        identity_str: str = spawn.kwargs.get("identity", "")
+        cached = ends[0].cached if ends else False
 
         return SpanInfo(
             seq=span_seq,
             name=name,
             parent_seq=spawn.parent_seq,
-            identity=identity_str,
+            identity=spawn.identity,
             cached=cached,
             start_ts=spawn.ts,
             end_ts=end_ts,
@@ -65,7 +100,7 @@ class TraceInspector:
     def span_name(self, span_seq: int) -> str | None:
         """Get the name of a span by its sequence number."""
         for e in self._sink.events:
-            if e.kind == "spawn" and e.seq == span_seq:
+            if isinstance(e, SpawnEvent) and e.seq == span_seq:
                 return e.name
         return None
 
@@ -79,15 +114,15 @@ class TraceInspector:
             return [e for e in self._sink.events if e.kind == kind and e.seq == parent_seq]
         return [e for e in self._sink.events if e.kind == kind and e.parent_seq == parent_seq]
 
-    def edge_annotations(self, parent_name: str) -> list[Event]:
+    def edge_annotations(self, parent_name: str) -> list[TraceEvent]:
         """Get trace events with edge=True under a named parent."""
         parent = self.span(parent_name)
         return [
             e
             for e in self._sink.events
-            if e.kind == "trace"
+            if isinstance(e, TraceEvent)
             and e.parent_seq == parent.seq
-            and e.kwargs.get("edge") is True
+            and e.edge
         ]
 
     def total_executions(self) -> int:
@@ -96,7 +131,10 @@ class TraceInspector:
 
     def cached_count(self) -> int:
         """Count cached end events."""
-        return len([e for e in self._sink.events if e.kind == "end" and e.cached is True])
+        return len([
+            e for e in self._sink.events
+            if isinstance(e, EndEvent) and e.cached
+        ])
 
 
 class Harness:
@@ -140,5 +178,5 @@ class Harness:
         self._run.__enter__()
         return self
 
-    async def __aexit__(self, *args: Any) -> None:
-        self._run.__exit__(*args)
+    async def __aexit__(self, *exc: object) -> None:
+        self._run.__exit__(*exc)

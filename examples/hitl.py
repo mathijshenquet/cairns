@@ -62,4 +62,4 @@ main = pipeline
 if __name__ == "__main__":
     from cairns.interaction import StdinInteractionSink
 
-    print(run(pipeline, store_path=".cairns", interaction_sink=StdinInteractionSink()))
+    print(run(pipeline(), store_path=".cairns", interaction_sink=StdinInteractionSink()))

@@ -48,7 +48,7 @@ async def test_validated_loop() -> None:
         # Should have gone through generate → validate (fail) → refine → validate (pass)
         edges = rt.trace.edge_annotations("validated")
         assert len(edges) == 1
-        assert edges[0].kwargs["progress"] == (1, 3)
+        assert edges[0].progress == (1, 3)
 
 
 # ── Human input pattern ──

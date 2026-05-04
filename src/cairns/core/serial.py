@@ -22,7 +22,10 @@ Use `runtime.register_serializer(...)` to extend.
 from __future__ import annotations
 
 import importlib
-from typing import Any, Protocol, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast
+
+if TYPE_CHECKING:
+    from .runtime import Runtime
 
 
 _SERIAL_TAG = "__cairn_serial__"
@@ -135,7 +138,7 @@ class _PydanticSerializer:
         return cls.model_validate(form)  # type: ignore[attr-defined]
 
 
-def install_defaults(runtime: Any) -> None:
+def install_defaults(runtime: "Runtime") -> None:
     """Install Pydantic serializer on `runtime` (no-op if pydantic unavailable)."""
     try:
         from pydantic import BaseModel  # noqa: PLC0415

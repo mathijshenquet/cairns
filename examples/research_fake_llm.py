@@ -175,7 +175,7 @@ main = pipeline
 if __name__ == "__main__":
     print("Running research pipeline...")
     print("Store: .cairns/\n")
-    results = run(pipeline, store_path=".cairns")
+    results = run(pipeline(), store_path=".cairns")
     print(f"\nCompleted {len(results)} reports:\n")
     for subject, report in results.items():
         print(f"  {subject}: {report[:80]}...")

@@ -267,7 +267,10 @@ class Record:
     record_id: str | None = None
     record_path: str | None = None
     result_hash: str | None = None
-    child_refs: list[dict[str, str]] = field(default_factory=lambda: [])
+    # Each child-ref dict has the `ChildRef` shape (cairn_id, record_id,
+    # record_path, short_name, start_ts_rel, end_ts_rel). We avoid the
+    # TypedDict here to dodge the `core.types ↔ core.store` import cycle.
+    child_refs: list[dict[str, Any]] = field(default_factory=lambda: [])
     origin: Origin = "recalled"
     tags: dict[str, str] = field(default_factory=lambda: {})
     body_hash: str | None = None

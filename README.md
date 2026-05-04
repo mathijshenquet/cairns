@@ -68,8 +68,7 @@ async def pipeline(urls: list[str]) -> list[int]:
     pages = [fetch(u) for u in urls]              # returns Handles; runs concurrently
     return [await extract(p) for p in pages]      # pages are awaited inside extract
 
-run(pipeline, store_path=".cairns",
-    args=(["https://a", "https://b", "https://c"],))
+run(pipeline(["https://a", "https://b", "https://c"]), store_path=".cairns")
 ```
 
 Run it twice. The second run is instant — every `@step(memo=True)` result is

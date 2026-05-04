@@ -34,12 +34,12 @@ def test_pydantic_roundtrips_through_cache(tmp_path: Path) -> None:
     async def analyze() -> Analysis:
         return Analysis(sentiment="positive", score=0.87)
 
-    r1 = run(analyze, store_path=store_path)
+    r1 = run(analyze(), store_path=store_path)
     assert isinstance(r1, Analysis)
     assert r1.sentiment == "positive"
     assert r1.score == 0.87
 
-    r2 = run(analyze, store_path=store_path)
+    r2 = run(analyze(), store_path=store_path)
     assert isinstance(r2, Analysis), f"cache hit returned {type(r2).__name__}"
     assert r2 == r1
 
@@ -52,8 +52,8 @@ def test_nested_pydantic_roundtrips(tmp_path: Path) -> None:
     async def wrap() -> Wrapped:
         return Wrapped(tag="t", inner=Analysis(sentiment="neg", score=0.1))
 
-    r1 = run(wrap, store_path=store_path)
-    r2 = run(wrap, store_path=store_path)
+    r1 = run(wrap(), store_path=store_path)
+    r2 = run(wrap(), store_path=store_path)
     assert isinstance(r2, Wrapped)
     assert isinstance(r2.inner, Analysis)
     assert r2 == r1
@@ -67,8 +67,8 @@ def test_tuple_distinct_from_list(tmp_path: Path) -> None:
     async def pair() -> tuple[int, int]:
         return (1, 2)
 
-    r1 = run(pair, store_path=store_path)
-    r2 = run(pair, store_path=store_path)
+    r1 = run(pair(), store_path=store_path)
+    r2 = run(pair(), store_path=store_path)
     assert r1 == (1, 2)
     assert isinstance(r2, tuple)
     assert r2 == (1, 2)
@@ -82,8 +82,8 @@ def test_unregistered_type_falls_through_to_json(tmp_path: Path) -> None:
     async def produce() -> dict[str, Any]:
         return {"a": 1, "b": [1, 2, 3], "c": {"d": "x"}}
 
-    r1 = run(produce, store_path=store_path)
-    r2 = run(produce, store_path=store_path)
+    r1 = run(produce(), store_path=store_path)
+    r2 = run(produce(), store_path=store_path)
     assert r1 == {"a": 1, "b": [1, 2, 3], "c": {"d": "x"}}
     assert r2 == r1
 
@@ -112,8 +112,8 @@ def test_list_of_pydantic_models(tmp_path: Path) -> None:
     async def batch() -> list[Item]:
         return [Item(name="a", qty=1), Item(name="b", qty=2)]
 
-    r1 = run(batch, store_path=store_path)
-    r2 = run(batch, store_path=store_path)
+    r1 = run(batch(), store_path=store_path)
+    r2 = run(batch(), store_path=store_path)
     assert isinstance(r2, list)
     assert len(r2) == 2
     assert all(isinstance(x, Item) for x in r2)

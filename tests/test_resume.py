@@ -42,7 +42,7 @@ def test_resume_after_failure(tmp_path: Path) -> None:
 
     # First run — fails at step_c
     try:
-        run(pipeline, store_path=store_path)
+        run(pipeline(), store_path=store_path)
         assert False, "should have raised"
     except ValueError:
         pass
@@ -52,7 +52,7 @@ def test_resume_after_failure(tmp_path: Path) -> None:
     # Second run — step_a and step_b should be cached, step_c retries
     should_fail = False
     call_counts.clear()
-    result = run(pipeline, store_path=store_path)
+    result = run(pipeline(), store_path=store_path)
 
     assert result == "result_a+result_b"
     assert call_counts.get("a", 0) == 0  # cached
@@ -80,13 +80,13 @@ def test_resume_fanout_partial_failure(tmp_path: Path) -> None:
         return [await h for h in handles]
 
     # First run — items 2 and 4 "fail" (return failure markers)
-    result1 = run(pipeline, store_path=store_path)
+    result1 = run(pipeline(), store_path=store_path)
     assert result1 == ["result_0", "result_1", "FAILED_2", "result_3", "FAILED_4"]
     assert call_counts == {0: 1, 1: 1, 2: 1, 3: 1, 4: 1}
 
     # Second run — everything cached (including "failed" results)
     call_counts.clear()
-    result2 = run(pipeline, store_path=store_path)
+    result2 = run(pipeline(), store_path=store_path)
     assert result2 == result1
     assert all(call_counts.get(i, 0) == 0 for i in range(5))
 
@@ -117,13 +117,13 @@ def test_resume_preserves_trace(tmp_path: Path) -> None:
         return await step_b(a)
 
     try:
-        run(pipeline, store_path=store_path)
+        run(pipeline(), store_path=store_path)
     except ValueError:
         pass
 
     # Second run succeeds
     should_fail = False
-    run(pipeline, store_path=store_path)
+    run(pipeline(), store_path=store_path)
 
     # Should have two run directories
     runs_dir = tmp_path / ".cairns" / "runs"

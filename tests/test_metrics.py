@@ -8,13 +8,16 @@ from pathlib import Path
 import pytest
 
 from cairns import step
-from cairns.core import Record, Event, MemoryStore, StoreStats
+from cairns.core import EndEvent, Record, MemoryStore, StoreStats
 from cairns.testing import Harness, TraceInspector
 
 
-def _end_for(inspector: TraceInspector, name: str) -> Event:
+def _end_for(inspector: TraceInspector, name: str) -> EndEvent:
     span = inspector.span(name)
-    ends = [e for e in inspector.all_events if e.kind == "end" and e.seq == span.seq]
+    ends = [
+        e for e in inspector.all_events
+        if isinstance(e, EndEvent) and e.seq == span.seq
+    ]
     assert ends, f"no end event for {name}"
     return ends[0]
 
@@ -63,8 +66,8 @@ async def test_own_time_sequential():
         await parent()
 
     end = _end_for(rt.trace, "parent")
-    wall = end.kwargs["duration"]
-    own = end.kwargs["own_duration"]
+    wall = end.duration
+    own = end.own_duration
     # Parent itself did almost no work; both children were awaited.
     assert wall >= 0.05
     assert own < 0.015, f"own_time should be tiny, got {own}"
@@ -88,8 +91,8 @@ async def test_own_time_gather():
         await parent()
 
     end = _end_for(rt.trace, "parent")
-    wall = end.kwargs["duration"]
-    own = end.kwargs["own_duration"]
+    wall = end.duration
+    own = end.own_duration
     # Both children ran concurrently (~40ms wall). Parent's own_time near 0;
     # critically, not near 80ms (which naive sum-of-durations would give → own<0).
     assert 0.03 <= wall <= 0.15
@@ -123,11 +126,11 @@ async def test_own_time_nested():
     end_c = _end_for(rt.trace, "c")
 
     # a did nothing itself — all wait on b
-    assert end_a.kwargs["own_duration"] < 0.015
+    assert end_a.own_duration < 0.015
     # b's own_time reflects its own sleep, not c's
-    assert 0.02 <= end_b.kwargs["own_duration"] <= 0.06
+    assert 0.02 <= end_b.own_duration <= 0.06
     # c's own_time ≈ its sleep
-    assert 0.02 <= end_c.kwargs["own_duration"] <= 0.06
+    assert 0.02 <= end_c.own_duration <= 0.06
 
 
 @pytest.mark.asyncio
@@ -143,8 +146,8 @@ async def test_own_time_own_work():
         await compute()
 
     end = _end_for(rt.trace, "compute")
-    wall = end.kwargs["duration"]
-    own = end.kwargs["own_duration"]
+    wall = end.duration
+    own = end.own_duration
     # No Handle awaits → own ≈ wall.
     assert abs(wall - own) < 0.01
 
@@ -168,14 +171,14 @@ async def test_own_metrics_on_cached_hit():
         ends = [e for e in rt.trace.all_events if e.kind == "end"]
         fresh, hit = ends[0], ends[1]
 
-        assert fresh.kwargs["size"] > 0
-        assert fresh.kwargs["own_size"] == fresh.kwargs["size"]
-        assert fresh.kwargs["own_duration"] >= 0.005
+        assert fresh.size > 0
+        assert fresh.own_size == fresh.size
+        assert fresh.own_duration >= 0.005
 
         assert hit.cached is True
-        assert hit.kwargs["size"] == 0
-        assert hit.kwargs["own_size"] == 0
-        assert hit.kwargs["own_duration"] >= 0.0  # real measurement, near zero
+        assert hit.size == 0
+        assert hit.own_size == 0
+        assert hit.own_duration >= 0.0  # real measurement, near zero
 
 
 # ── Error path still emits metrics ──
@@ -197,10 +200,10 @@ async def test_own_metrics_on_error():
     errors = [e for e in rt.trace.all_events if e.kind == "error"]
     assert len(errors) == 1
     err = errors[0]
-    assert err.kwargs["size"] > 0
-    assert err.kwargs["own_size"] == err.kwargs["size"]
-    assert err.kwargs["duration"] >= 0.005
-    assert err.kwargs["own_duration"] >= 0.005
+    assert err.size > 0
+    assert err.own_size == err.size
+    assert err.duration >= 0.005
+    assert err.own_duration >= 0.005
 
 
 # ── Error propagating through an awaited handle ──
@@ -227,10 +230,11 @@ async def test_error_through_awaited_child():
     errors = [e for e in rt.trace.all_events if e.kind == "error"]
     # Both parent and child report errors.
     assert len(errors) == 2
+    from cairns.core import ErrorEvent
     for err in errors:
-        assert "size" in err.kwargs
-        assert "own_duration" in err.kwargs
-        assert err.kwargs["own_duration"] >= 0.0
+        assert isinstance(err, ErrorEvent)
+        assert err.size > 0
+        assert err.own_duration >= 0.0
 
 
 # ── Spawn-without-await: cleanup gather attributed to await time ──
@@ -256,8 +260,8 @@ async def test_spawn_without_await_cleanup_counts_as_await():
         await parent()
 
     end = _end_for(rt.trace, "parent")
-    wall = end.kwargs["duration"]
-    own = end.kwargs["own_duration"]
+    wall = end.duration
+    own = end.own_duration
     # Parent did near-zero of its own work; wall includes the ~50ms waiting on
     # the orphan during cleanup. own_time must NOT include that wait.
     assert wall >= 0.04
@@ -296,7 +300,7 @@ async def test_cached_duration_serial_sums():
         await parent()    # both children cached on this run
         end = _end_for(rt.trace, "parent")
         # Both children took ≈40ms originally. Serial → sum.
-        assert end.kwargs["cached_duration"] >= 0.07, end.kwargs["cached_duration"]
+        assert end.cached_duration >= 0.07, end.cached_duration
 
 
 @pytest.mark.asyncio
@@ -329,7 +333,7 @@ async def test_cached_duration_parallel_takes_max():
         await warm()      # populate the cache
         await parent()    # both children cached on this run
         end = _end_for(rt.trace, "parent")
-        cached = end.kwargs["cached_duration"]
+        cached = end.cached_duration
         # Parallel collapses: take ≈40ms (max), not ≈80ms (sum).
         assert 0.03 <= cached <= 0.06, f"expected ≈max(40ms), got {cached}"
 

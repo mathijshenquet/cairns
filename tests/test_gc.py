@@ -40,7 +40,7 @@ def _make_runs(tmp_path: Path, n: int = 3) -> str:
         return x * 2
 
     for i in range(n):
-        run(work, store_path=store_path, args=(i,))
+        run(work(i), store_path=store_path)
         time.sleep(0.01)  # ensure distinct timestamps
 
     return store_path
@@ -168,9 +168,9 @@ def test_gc_with_shared_outputs(tmp_path: Path) -> None:
     async def constant() -> str:
         return "always the same"
 
-    run(constant, store_path=store_path)
+    run(constant(), store_path=store_path)
     time.sleep(0.01)
-    run(constant, store_path=store_path)
+    run(constant(), store_path=store_path)
 
     runs = list_runs(store_path)
     assert len(runs) == 2
@@ -223,11 +223,11 @@ def test_list_runs_multiple_entry_points(tmp_path: Path) -> None:
     async def pipeline_b() -> str:
         return "b"
 
-    run(pipeline_a, store_path=store_path)
+    run(pipeline_a(), store_path=store_path)
     time.sleep(0.01)
-    run(pipeline_b, store_path=store_path)
+    run(pipeline_b(), store_path=store_path)
     time.sleep(0.01)
-    run(pipeline_a, store_path=store_path)
+    run(pipeline_a(), store_path=store_path)
 
     runs = list_runs(store_path)
     assert len(runs) == 3

@@ -19,7 +19,7 @@ def test_run_creates_disk_layout(tmp_path: Path) -> None:
         trace("building greeting")
         return f"hello {name}"
 
-    result = run(greet, store_path=store_path, args=("world",))
+    result = run(greet("world"), store_path=store_path)
     assert result == "hello world"
 
     # Value-bytes CAS holds a {"result": ...} payload, nothing else.
@@ -62,7 +62,7 @@ def test_run_creates_step_symlinks(tmp_path: Path) -> None:
     async def add(a: int, b: int) -> int:
         return a + b
 
-    result = run(add, store_path=store_path, args=(1, 2))
+    result = run(add(1, 2), store_path=store_path)
     assert result == 3
 
     runs = tmp_path / ".cairns" / "runs"
@@ -88,7 +88,7 @@ def test_run_creates_gc_root_symlink(tmp_path: Path) -> None:
     async def compute() -> int:
         return 42
 
-    run(compute, store_path=store_path)
+    run(compute(), store_path=store_path)
 
     gc_root = tmp_path / ".cairns" / "runs" / "compute"
     assert gc_root.is_symlink()
@@ -106,11 +106,11 @@ def test_run_caches_across_runs(tmp_path: Path) -> None:
         call_count += 1
         return "result"
 
-    result1 = run(expensive, store_path=store_path)
+    result1 = run(expensive(), store_path=store_path)
     assert result1 == "result"
     assert call_count == 1
 
-    result2 = run(expensive, store_path=store_path)
+    result2 = run(expensive(), store_path=store_path)
     assert result2 == "result"
     assert call_count == 1  # not called again
 
@@ -128,7 +128,7 @@ def test_run_with_fanout(tmp_path: Path) -> None:
         handles = [double(i) for i in range(3)]
         return [await h for h in handles]
 
-    result = run(pipeline, store_path=store_path)
+    result = run(pipeline(), store_path=store_path)
     assert result == [0, 2, 4]
 
     store_files = list((tmp_path / ".cairns" / "store").glob("*.json"))
@@ -157,8 +157,8 @@ def test_cairn_stone_layout_and_recalled_subtree(tmp_path: Path) -> None:
         calls["root"] += 1
         return await leaf()
 
-    assert run(root, store_path=store_path) == "leaf"
-    assert run(root, store_path=store_path) == "leaf"
+    assert run(root(), store_path=store_path) == "leaf"
+    assert run(root(), store_path=store_path) == "leaf"
     assert calls == {"leaf": 1, "root": 1}
 
     cairns = tmp_path / ".cairns" / "cairns"
@@ -199,7 +199,7 @@ def test_version_mismatch_forces_fresh_stone(tmp_path: Path) -> None:
         calls["n"] += 1
         return "v1-result"
 
-    assert run(_compute_v1, store_path=store_path) == "v1-result"
+    assert run(_compute_v1(), store_path=store_path) == "v1-result"
     assert calls == {"n": 1}
 
     # Re-declare with a different version — should miss the cache and push a new record.
@@ -208,7 +208,7 @@ def test_version_mismatch_forces_fresh_stone(tmp_path: Path) -> None:
         calls["n"] += 1
         return "v2-result"
 
-    assert run(_compute_v2, store_path=store_path) == "v2-result"
+    assert run(_compute_v2(), store_path=store_path) == "v2-result"
     assert calls == {"n": 2}
 
     # Both versions sit in the same cairn (cairn_id excludes version).
@@ -230,7 +230,7 @@ def test_carry_overrides_resolver(tmp_path: Path) -> None:
         return f"real:{tag}"
 
     # Seed the store with a real "A" record.
-    assert run(pick, store_path=store_path, args=("A",)) == "real:A"
+    assert run(pick("A"), store_path=store_path) == "real:A"
     assert calls == {"n": 1}
 
     info = pick.info  # type: ignore[attr-defined]
@@ -243,7 +243,7 @@ def test_carry_overrides_resolver(tmp_path: Path) -> None:
 
     # Now run with tag="B" but carry the "A" record at cairn_id(B). The body
     # should not execute — the carried record's result is returned verbatim.
-    result = run(pick, store_path=store_path, args=("B",), carry={cairn_id_b: record_path})
+    result = run(pick("B"), store_path=store_path, carry={cairn_id_b: record_path})
     assert result == "real:A"
     assert calls == {"n": 1}  # still no new body execution
 
@@ -276,7 +276,7 @@ def test_error_stones_keep_trace_events(tmp_path: Path) -> None:
         raise RuntimeError("boom")
 
     with pytest.raises(RuntimeError):
-        run(fail, store_path=store_path)
+        run(fail(), store_path=store_path)
 
     records = [p for p in (tmp_path / ".cairns" / "cairns").glob("*/*") if p.is_dir()]
     fail_stone = next(s for s in records if json.loads((s / "metadata.json").read_text()).get("short_name") == "fail")
@@ -309,7 +309,7 @@ def test_cached_flamegraph_reconstructs_original_timing(tmp_path: Path) -> None:
         return await a + await b
 
     # First run: populate the cache with real timings.
-    run(parent, store_path=store_path)
+    run(parent(), store_path=store_path)
     first_runs = sorted(d for d in (tmp_path / ".cairns" / "runs").iterdir() if d.is_dir() and d.name.startswith("parent-"))
     first_trace = first_runs[-1] / "trace.jsonl"
     with open(first_trace, "r") as f:
@@ -324,7 +324,7 @@ def test_cached_flamegraph_reconstructs_original_timing(tmp_path: Path) -> None:
     # Second run: cache hit on parent. Stitched cached events fire at real
     # `monotonic()` (sort-by-ts is clean); the subtree's original durations
     # ride on the `duration` kwarg of each end event.
-    run(parent, store_path=store_path)
+    run(parent(), store_path=store_path)
     second_runs = sorted(d for d in (tmp_path / ".cairns" / "runs").iterdir() if d.is_dir() and d.name.startswith("parent-"))
     second_trace = second_runs[-1] / "trace.jsonl"
     with open(second_trace, "r") as f:
@@ -378,8 +378,8 @@ def test_cached_child_replay_does_not_make_parent_time_go_backwards(tmp_path: Pa
         return value
 
     # Warm the child's record. The parent still executes live on the second run.
-    run(parent, store_path=store_path)
-    run(parent, store_path=store_path)
+    run(parent(), store_path=store_path)
+    run(parent(), store_path=store_path)
 
     runs = sorted(
         d for d in (tmp_path / ".cairns" / "runs").iterdir()
@@ -416,7 +416,7 @@ def test_subtree_integrity_skips_stones_with_missing_children(tmp_path: Path) ->
         calls["parent"] += 1
         return await child()
 
-    assert run(parent, store_path=store_path) == "c"
+    assert run(parent(), store_path=store_path) == "c"
     assert calls == {"parent": 1, "child": 1}
 
     # Nuke the child record, leaving the parent's children/000 pointer dangling.
@@ -429,6 +429,6 @@ def test_subtree_integrity_skips_stones_with_missing_children(tmp_path: Path) ->
                 shutil.rmtree(stone_dir)
 
     # Rerun: parent's record is no longer recallable → body executes again.
-    assert run(parent, store_path=store_path) == "c"
+    assert run(parent(), store_path=store_path) == "c"
     assert calls["parent"] == 2
     assert calls["child"] == 2

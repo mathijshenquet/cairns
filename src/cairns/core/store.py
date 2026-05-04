@@ -14,7 +14,7 @@ import os
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Any, Callable, Iterator, Protocol, cast
+from typing import Any, Callable, Iterator, Literal, NotRequired, Protocol, TypedDict, cast
 
 from .lock import store_shared
 from .serial import from_jsonable, to_jsonable
@@ -35,6 +35,59 @@ class StoreStats:
     record_id: str | None = None
     record_path: str | None = None
     result_hash: str | None = None
+
+
+class ChildRef(TypedDict):
+    """One entry in a record's `children` list. A pointer to a fully-resolved
+    child span: enough to navigate to it, plus relative timestamps for
+    rebuilding the event stream.
+    """
+
+    cairn_id: str
+    record_id: str
+    record_path: str
+    short_name: str
+    start_ts_rel: float
+    end_ts_rel: float
+
+
+class TraceRecordDict(TypedDict):
+    """A trace event as stored inside a record's `events` list."""
+
+    kind: Literal["trace"]
+    ts: float
+    delta: float
+    message: str
+    kwargs: dict[str, Any]
+
+
+class SpawnRecordDict(TypedDict):
+    """A child-spawn event as stored inside a record's `events` list."""
+
+    kind: Literal["spawn"]
+    ts: float
+    end_ts: float
+    child_index: int
+    short_name: NotRequired[str | None]
+    record_path: NotRequired[str]
+
+
+RecordEventDict = TraceRecordDict | SpawnRecordDict
+
+
+class RecordMeta(TypedDict, total=False):
+    """Metadata persisted alongside a record.
+
+    All fields are optional (legacy records may be missing fields).
+    `total=False` makes every key NotRequired.
+    """
+
+    short_name: str
+    children: list[ChildRef]
+    args_repr: dict[str, str]
+    start_ts: float
+    events: list[RecordEventDict]
+    tags: dict[str, str]
 
 
 @dataclass(frozen=True)
@@ -66,7 +119,7 @@ class Store(Protocol):
         key: str,
         entry: Record,
         *,
-        metadata: dict[str, Any] | None = None,
+        metadata: RecordMeta | None = None,
     ) -> StoreStats: ...
 
     def iter_records(self, cairn_id: str) -> Iterator[Record]:
@@ -81,15 +134,15 @@ class Store(Protocol):
 # ── Serialization helpers ──
 
 
-def trace_to_event(t: TraceRecord, start_ts: float) -> dict[str, Any]:
+def trace_to_event(t: TraceRecord, start_ts: float) -> TraceRecordDict:
     """Serialize a TraceRecord as a record-relative event line."""
-    return {
-        "kind": "trace",
-        "ts": max(0.0, t.timestamp - start_ts),
-        "delta": t.delta,
-        "message": t.message,
-        "kwargs": t.kwargs,
-    }
+    return TraceRecordDict(
+        kind="trace",
+        ts=max(0.0, t.timestamp - start_ts),
+        delta=t.delta,
+        message=t.message,
+        kwargs=dict(t.kwargs),
+    )
 
 
 def _event_to_trace(e: dict[str, Any]) -> TraceRecord:
@@ -138,14 +191,14 @@ class MemoryStore:
         key: str,
         entry: Record,
         *,
-        metadata: dict[str, Any] | None = None,
+        metadata: RecordMeta | None = None,
     ) -> StoreStats:
-        md = metadata or {}
+        md: RecordMeta = metadata or {}
         record_id = f"mem-{len(self._stacks.get(key, [])) + 1}"
         entry.cairn_id = key
         entry.record_id = record_id
         entry.record_path = None
-        entry.child_refs = list(md.get("children", []))
+        entry.child_refs = [cast(dict[str, Any], c) for c in md.get("children") or []]
         payload = _result_payload(entry)
         result_hash = None if entry.error else _hash_payload(payload)
         entry.result_hash = result_hash
@@ -451,11 +504,11 @@ class FileStore:
         key: str,
         entry: Record,
         *,
-        metadata: dict[str, Any] | None = None,
+        metadata: RecordMeta | None = None,
     ) -> StoreStats:
-        md = metadata or {}
-        children: list[dict[str, Any]] = list(md.get("children") or [])
-        events_stream: list[dict[str, Any]] = list(md.get("events") or [])
+        md: RecordMeta = metadata or {}
+        children: list[ChildRef] = list(md.get("children") or [])
+        events_stream: list[RecordEventDict] = list(md.get("events") or [])
 
         # Hold a shared store lock for the whole publication: CAS write + record
         # tmp-dir + atomic rename. GC takes the exclusive lock and will wait for
@@ -474,9 +527,9 @@ class FileStore:
         *,
         key: str,
         entry: Record,
-        md: dict[str, Any],
-        children: list[dict[str, Any]],
-        events_stream: list[dict[str, Any]],
+        md: RecordMeta,
+        children: list[ChildRef],
+        events_stream: list[RecordEventDict],
     ) -> StoreStats:
         result_hash: str | None = None
         result_path: str | None = None
@@ -617,7 +670,7 @@ class OverlayStore:
         key: str,
         entry: Record,
         *,
-        metadata: dict[str, Any] | None = None,
+        metadata: RecordMeta | None = None,
     ) -> StoreStats:
         return self._base.put(key, entry, metadata=metadata)
 

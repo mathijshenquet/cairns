@@ -6,11 +6,29 @@ import asyncio
 import functools
 import inspect
 import time
-from typing import Any, Awaitable, Callable, Generator, Generic, Literal, ParamSpec, TypeVar, overload
+import warnings
+from typing import Any, Awaitable, Callable, Generator, Generic, Literal, ParamSpec, TypeVar, cast, overload
 
-from .runtime import current_run, current_span, emit_event
+from .runtime import (
+    CancelEvent,
+    EndEvent,
+    ErrorEvent,
+    ResumeEvent,
+    SpawnEvent,
+    StartEvent,
+    TraceEvent,
+    TraceLevel,
+    WaitEvent,
+    current_run,
+    current_run_or_none,
+    current_span,
+    emit_event,
+)
 from .store import (
+    ChildRef,
     Predicate,
+    RecordEventDict,
+    SpawnRecordDict,
     Store,
     child_record_path,
     iter_record_events,
@@ -27,34 +45,89 @@ R = TypeVar("R")
 
 
 class Handle(Generic[R]):
-    """Awaitable reference to a running step's eventual result."""
+    """Awaitable reference to a step invocation.
+
+    Two states:
+
+    - **eager** — the step was called inside an active run. A `TaskSpan`
+      and `asyncio.Task` exist; awaiting yields the result.
+    - **deferred** — the step was called at top level with no active run.
+      `(fn, args, kwargs)` are captured; `cairns.run(handle)` replays the
+      call inside a freshly-built run. Awaiting a deferred handle is an
+      error; dropping it without consuming warns via `__del__`.
+
+    Eager handles are constructed by the `@step` wrapper inside an active
+    run; deferred handles by `Handle._deferred(...)` from the same wrapper
+    when no run is active.
+    """
 
     def __init__(self, span: TaskSpan, task: asyncio.Task[R], args_summary: str = "", memo: bool | Predicate = False) -> None:
-        self._span = span
-        self._task = task
-        emit_event(
-            "spawn",
+        # Eager construction. Used by the @step wrapper inside an active run.
+        self._span: TaskSpan | None = span
+        self._task: asyncio.Task[R] | None = task
+        self._fn: Callable[..., Handle[R]] | None = None
+        self._args: tuple[Any, ...] = ()
+        self._kwargs: dict[str, Any] = {}
+        self._consumed: bool = True  # eager handles are inherently "live"
+        emit_event(SpawnEvent(
             seq=span.seq,
             parent_seq=span.parent_seq,
             name=span.name,
-            kwargs={
-                "identity": span.info.name,
-                "body_hash": span.info.short_body_hash(),
-                "version": span.info.version,
-                "args": args_summary,
-                "memo": bool(memo),
-            },
-        )
+            identity=span.info.name,
+            body_hash=span.info.short_body_hash(),
+            version=span.info.version,
+            args=args_summary,
+            memo=bool(memo),
+        ))
+
+    @classmethod
+    def _deferred(
+        cls,
+        fn: Callable[..., Handle[R]],
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+    ) -> Handle[R]:
+        """Capture a top-level @step call until `cairns.run(handle)` runs it."""
+        h: Handle[R] = cls.__new__(cls)
+        h._span = None
+        h._task = None
+        h._fn = fn
+        h._args = args
+        h._kwargs = kwargs
+        h._consumed = False
+        return h
+
+    @property
+    def is_deferred(self) -> bool:
+        """True if this Handle is captured at top level and waiting for `run()`."""
+        return self._task is None
+
+    def _consume(self) -> Handle[R]:
+        """Replay a deferred Handle inside the now-active run, returning the
+        eager Handle that the wrapper produces. Internal use by `run()`/`arun()`.
+        """
+        if self._task is not None:
+            raise RuntimeError(
+                "Handle is eager (created inside a run); nothing to consume"
+            )
+        assert self._fn is not None
+        self._consumed = True
+        return self._fn(*self._args, **self._kwargs)
 
     def __await__(self) -> Generator[Any, Any, R]:
+        if self._task is None or self._span is None:
+            raise RuntimeError(
+                "cannot await a deferred Handle outside an active run — "
+                "pass it to `cairns.run(handle)` or call from inside a `@step`."
+            )
         awaiter = current_span.get()
         if awaiter is None:
             return (yield from self._task.__await__())
-        emit_event(
-            "wait",
+        emit_event(WaitEvent(
             seq=awaiter.seq,
-            kwargs={"on": {"kind": "span", "seq": self._span.seq}},
-        )
+            on_kind="span",
+            on_seq=self._span.seq,
+        ))
         awaiter.enter_await()
         try:
             result = yield from self._task.__await__()
@@ -67,21 +140,41 @@ class Handle(Generic[R]):
             # clock at the moment this child finished. Sequential awaits
             # ratchet (sum); parallel `gather` collapses (max).
             awaiter.virtual_skew = max(awaiter.virtual_skew, self._span.virtual_skew)
-            emit_event("resume", seq=awaiter.seq)
+            emit_event(ResumeEvent(seq=awaiter.seq))
         return result
 
     def cancel(self) -> None:
         """Cancel the underlying task."""
-        self._task.cancel()
+        if self._task is not None:
+            self._task.cancel()
 
     def done(self) -> bool:
-        """Check if the task has completed."""
-        return self._task.done()
+        """Check if the task has completed. Deferred handles are never done."""
+        return self._task is not None and self._task.done()
 
     @property
     def span(self) -> TaskSpan:
-        """Access the span for this handle."""
+        """Access the span for this handle. Raises if the Handle is deferred."""
+        if self._span is None:
+            raise RuntimeError("deferred Handle has no span — pass it to `run()` first")
         return self._span
+
+    def __del__(self) -> None:
+        # Warn if a deferred Handle is dropped without being consumed by `run()`.
+        # Mirrors asyncio's "Task was destroyed but it is pending!" UX.
+        # Guarded because `__del__` may fire during interpreter shutdown when
+        # the warnings module is partially gone.
+        if self._task is None and not self._consumed:
+            try:
+                fn_name = getattr(self._fn, "__name__", "<step>")
+                warnings.warn(
+                    f"deferred {fn_name}(...) was dropped without being passed "
+                    f"to cairns.run() — its body never executed",
+                    ResourceWarning,
+                    stacklevel=2,
+                )
+            except Exception:
+                pass
 
 
 # ── trace() ──
@@ -124,12 +217,16 @@ def trace(
         merged["edge"] = True
 
     parent = current_span.get()
-    emit_event(
-        "trace",
+    emit_event(TraceEvent(
         parent_seq=parent.seq if parent else None,
         message=message,
-        kwargs=merged,
-    )
+        detail=detail,
+        progress=progress,
+        state=state,
+        level=level,
+        cost=cost,
+        edge=edge,
+    ))
     if parent is not None:
         parent.record_trace(message, merged)
 
@@ -185,40 +282,76 @@ def _compute_metrics(span: TaskSpan, *, size: int, own_size: int) -> SpanMetrics
     )
 
 
-def _build_child_refs(span: TaskSpan) -> list[dict[str, Any]]:
+def _build_child_refs(span: TaskSpan) -> list[ChildRef]:
     """Pointer list for each fully-resolved child span, in spawn order."""
-    refs: list[dict[str, Any]] = []
+    refs: list[ChildRef] = []
     for c in span.child_spans:
         if not (c.cairn_id and c.record_id and c.record_path):
             continue
-        refs.append(
-            {
-                "cairn_id": c.cairn_id,
-                "record_id": c.record_id,
-                "record_path": c.record_path,
-                "short_name": c.name,
-                "start_ts_rel": max(0.0, c.start_ts - span.start_ts),
-                "end_ts_rel": max(0.0, c.end_ts - span.start_ts),
-            }
-        )
+        refs.append(ChildRef(
+            cairn_id=c.cairn_id,
+            record_id=c.record_id,
+            record_path=c.record_path,
+            short_name=c.name,
+            start_ts_rel=max(0.0, c.start_ts - span.start_ts),
+            end_ts_rel=max(0.0, c.end_ts - span.start_ts),
+        ))
     return refs
 
 
-def _build_record_events(span: TaskSpan, child_refs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _build_record_events(span: TaskSpan, child_refs: list[ChildRef]) -> list[RecordEventDict]:
     """Interleave trace + spawn events, rebased to span.start_ts, ordered by ts."""
-    events: list[dict[str, Any]] = [trace_to_event(t, span.start_ts) for t in span.traces]
+    events: list[RecordEventDict] = [trace_to_event(t, span.start_ts) for t in span.traces]
     for i, c in enumerate(child_refs):
-        events.append(
-            {
-                "kind": "spawn",
-                "ts": float(c.get("start_ts_rel", 0.0)),
-                "end_ts": float(c.get("end_ts_rel", 0.0)),
-                "child_index": i,
-                "short_name": c.get("short_name"),
-            }
-        )
-    events.sort(key=lambda e: float(e.get("ts", 0.0)))
+        events.append(SpawnRecordDict(
+            kind="spawn",
+            ts=c["start_ts_rel"],
+            end_ts=c["end_ts_rel"],
+            child_index=i,
+            short_name=c["short_name"],
+        ))
+    events.sort(key=lambda e: float(e["ts"]))
     return events
+
+
+def _replay_trace_event(rec: dict[str, Any], *, parent_seq: int | None) -> TraceEvent:
+    """Reconstruct a `TraceEvent` from a stored trace record dict.
+
+    `rec["kwargs"]` holds the user's original `trace(...)` kwargs; pull the
+    well-known fields back out, falling through unknowns silently.
+    """
+    raw_kw = rec.get("kwargs")
+    kw: dict[str, Any] = cast(dict[str, Any], raw_kw) if isinstance(raw_kw, dict) else {}
+
+    progress_raw = kw.get("progress")
+    progress: tuple[int, int] | None = None
+    if isinstance(progress_raw, (list, tuple)):
+        seq = cast(list[Any] | tuple[Any, ...], progress_raw)
+        if len(seq) == 2:
+            progress = (int(seq[0]), int(seq[1]))
+
+    cost_raw = kw.get("cost")
+    cost: dict[str, int | float] | None = (
+        cast(dict[str, int | float], cost_raw) if isinstance(cost_raw, dict) else None
+    )
+
+    level_raw = kw.get("level", "info")
+    level: TraceLevel = level_raw if level_raw in ("info", "warn", "error") else "info"
+
+    state_raw = kw.get("state")
+    state: str | None = state_raw if isinstance(state_raw, str) else None
+
+    return TraceEvent(
+        parent_seq=parent_seq,
+        cached=True,
+        message=str(rec.get("message", "")),
+        detail=str(kw.get("detail", "")),
+        progress=progress,
+        state=state,
+        level=level,
+        cost=cost,
+        edge=bool(kw.get("edge", False)),
+    )
 
 
 def _stitch_record_events(record_path: str, parent_seq: int) -> None:
@@ -237,13 +370,7 @@ def _stitch_record_events(record_path: str, parent_seq: int) -> None:
     for rec in iter_record_events(record_path):
         kind = rec.get("kind")
         if kind == "trace":
-            emit_event(
-                "trace",
-                parent_seq=parent_seq,
-                cached=True,
-                message=rec.get("message", ""),
-                kwargs=rec.get("kwargs") or {},
-            )
+            emit_event(_replay_trace_event(rec, parent_seq=parent_seq))
         elif kind == "spawn":
             child_record = _event_child_record(record_path, rec)
             if child_record is not None:
@@ -290,35 +417,29 @@ def _stitch_recalled_span(
         return
     sid = current_run().next_seq()
     name = short_name or info.short_name or info.record_id
-    emit_event(
-        "spawn",
+    emit_event(SpawnEvent(
         seq=sid,
         parent_seq=parent_seq,
         name=name,
-        kwargs={
-            "cairn_id": info.cairn_id,
-            "record_id": info.record_id,
-            "record_path": info.record_path,
-            "origin": "recalled",
-        },
-    )
+        origin="recalled",
+        cairn_id=info.cairn_id,
+        record_id=info.record_id,
+        record_path=info.record_path,
+    ))
     _stitch_record_events(record_path, sid)
-    emit_event(
-        "end",
+    emit_event(EndEvent(
         seq=sid,
         cached=True,
-        kwargs={
-            "cairn_id": info.cairn_id,
-            "record_id": info.record_id,
-            "record_path": info.record_path,
-            "origin": "recalled",
-            "size": 0,
-            "own_size": 0,
-            "duration": info.duration,
-            "own_duration": info.own_duration,
-            "cached_duration": info.cached_duration,
-        },
-    )
+        cairn_id=info.cairn_id,
+        record_id=info.record_id,
+        record_path=info.record_path,
+        origin="recalled",
+        size=0,
+        own_size=0,
+        duration=info.duration,
+        own_duration=info.own_duration,
+        cached_duration=info.cached_duration,
+    ))
 
 
 # ── wrapper helpers ──
@@ -387,31 +508,25 @@ def _stitch_cached(span: TaskSpan, cached: Record) -> Any:
         _stitch_record_events(cached.record_path, span.seq)
     else:
         for t in cached.traces:
-            emit_event(
-                "trace",
+            emit_event(_replay_trace_event(
+                {"message": t.message, "kwargs": dict(t.kwargs)},
                 parent_seq=span.seq,
-                cached=True,
-                message=t.message,
-                kwargs=dict(t.kwargs),
-            )
+            ))
 
     span.end_ts = time.monotonic()
-    emit_event(
-        "end",
+    emit_event(EndEvent(
         seq=span.seq,
         cached=True,
-        kwargs={
-            "cairn_id": cached.cairn_id,
-            "record_id": cached.record_id,
-            "record_path": cached.record_path,
-            "origin": cached.origin,
-            "size": 0,
-            "own_size": 0,
-            "duration": duration,
-            "own_duration": own_duration,
-            "cached_duration": cached.cached_duration,
-        },
-    )
+        cairn_id=cached.cairn_id,
+        record_id=cached.record_id,
+        record_path=cached.record_path,
+        origin=cached.origin,
+        size=0,
+        own_size=0,
+        duration=duration,
+        own_duration=own_duration,
+        cached_duration=cached.cached_duration,
+    ))
     return cached.result
 
 
@@ -456,17 +571,19 @@ def _publish_success(
     span.record_id = stats.record_id
     span.record_path = stats.record_path
     metrics = _compute_metrics(span, size=stats.size, own_size=stats.own_size)
-    emit_event(
-        "end",
+    emit_event(EndEvent(
         seq=span.seq,
-        kwargs={
-            "cairn_id": stats.cairn_id,
-            "record_id": stats.record_id,
-            "record_path": stats.record_path,
-            "origin": "created",
-            **metrics.as_kwargs(),
-        },
-    )
+        cached=False,
+        cairn_id=stats.cairn_id,
+        record_id=stats.record_id,
+        record_path=stats.record_path,
+        origin="created",
+        size=metrics.size,
+        own_size=metrics.own_size,
+        duration=metrics.duration,
+        own_duration=metrics.own_duration,
+        cached_duration=metrics.cached_duration,
+    ))
     return result
 
 
@@ -510,12 +627,15 @@ def _publish_error(
     span.record_id = stats.record_id
     span.record_path = stats.record_path
     metrics = _compute_metrics(span, size=stats.size, own_size=stats.own_size)
-    emit_event(
-        "error",
+    emit_event(ErrorEvent(
         seq=span.seq,
         error=str(exc),
-        kwargs=metrics.as_kwargs(),
-    )
+        size=metrics.size,
+        own_size=metrics.own_size,
+        duration=metrics.duration,
+        own_duration=metrics.own_duration,
+        cached_duration=metrics.cached_duration,
+    ))
 
 
 # ── step decorator ──
@@ -650,6 +770,12 @@ def _make_step(
 
     @functools.wraps(fn)
     def wrapper(*args: Any, **kwargs: Any) -> Handle[Any]:
+        # No active run: capture the call as a deferred Handle. The user
+        # will hand this to `cairns.run(handle)` which replays it inside a
+        # freshly-built run context (where this same wrapper goes eager).
+        if current_run_or_none() is None:
+            return Handle[Any]._deferred(wrapper, args, kwargs)  # type: ignore[reportPrivateUsage]
+
         parent = current_span.get()
         rt = current_run()
         span = TaskSpan(
@@ -693,7 +819,7 @@ def _make_step(
                     if memo or cached.origin == "carried":
                         return _stitch_cached(span, cached)
 
-                emit_event("start", seq=span.seq)
+                emit_event(StartEvent(seq=span.seq))
                 result = await fn(**resolved)
                 await _gather_children(span, reraise=True)
                 return _publish_success(span, result, resolved, _info, store, key, tags=tags)
@@ -707,7 +833,7 @@ def _make_step(
                     _publish_error(span, resolved, _info, current_run().store, exc, tags=tags)
                 else:
                     span.end_ts = time.monotonic()
-                    emit_event("cancel", seq=span.seq)
+                    emit_event(CancelEvent(seq=span.seq))
                 raise
 
             finally:

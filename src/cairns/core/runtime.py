@@ -26,14 +26,17 @@ from __future__ import annotations
 
 import itertools
 import time
-from contextvars import ContextVar
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Callable, Mapping, Protocol, TypeVar
+from contextvars import ContextVar, Token
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Callable, ClassVar, Literal, Mapping, Protocol, TypeVar
 
 from .types import TaskSpan
 
 if TYPE_CHECKING:
+    from cairns.testing import Harness
+
     from .serial import Serializer
+    from .step import Handle
     from .store import Store
 
 
@@ -42,22 +45,135 @@ R = TypeVar("R")
 
 
 # ── Event types ──
+#
+# Each event kind is its own dataclass; `Event` is the union. The
+# `kind` ClassVar is the discriminator (matches the on-disk "e" key).
+# Common fields live on `_EventBase`. Per-kind fields are explicit —
+# no more `kwargs: dict[str, Any]` bag.
 
 
 @dataclass
-class Event:
-    """A single event in the trace log."""
-
-    kind: str  # spawn, start, end, error, cancel, wait, resume, trace
+class _EventBase:
     seq: int | None = None
     parent_seq: int | None = None
     ts: float = 0.0
-    name: str | None = None
-    message: str | None = None
-    cached: bool | None = None
-    error: str | None = None
-    by: int | None = None
-    kwargs: dict[str, Any] = field(default_factory=lambda: {})
+
+
+SpawnOrigin = Literal["live", "recalled"]
+EndOrigin = Literal["created", "carried", "recalled"]
+TraceLevel = Literal["info", "warn", "error"]
+WaitKind = Literal["span", "group"]
+
+
+@dataclass
+class SpawnEvent(_EventBase):
+    """A step has been spawned. `origin="recalled"` means the spawn is
+    being replayed from a cached subtree, in which case identity/body_hash
+    /version/args/memo are absent and cairn_id/record_id/record_path are set.
+    """
+
+    kind: ClassVar[Literal["spawn"]] = "spawn"
+    name: str = ""
+    identity: str = ""
+    body_hash: str = ""
+    version: str | None = None
+    args: str = ""
+    memo: bool = False
+    origin: SpawnOrigin = "live"
+    cairn_id: str | None = None
+    record_id: str | None = None
+    record_path: str | None = None
+
+
+@dataclass
+class StartEvent(_EventBase):
+    """Body started executing (i.e. cache miss confirmed)."""
+
+    kind: ClassVar[Literal["start"]] = "start"
+
+
+@dataclass
+class EndEvent(_EventBase):
+    """Body finished. `cached=True` means the result was looked up rather
+    than computed; `origin` distinguishes a fresh write from a carry overlay
+    or a recalled subtree.
+    """
+
+    kind: ClassVar[Literal["end"]] = "end"
+    cached: bool = False
+    cairn_id: str | None = None
+    record_id: str | None = None
+    record_path: str | None = None
+    origin: EndOrigin = "created"
+    size: int = 0
+    own_size: int = 0
+    duration: float = 0.0
+    own_duration: float = 0.0
+    cached_duration: float = 0.0
+
+
+@dataclass
+class WaitEvent(_EventBase):
+    """The span identified by `seq` is now blocked on another span (or group)."""
+
+    kind: ClassVar[Literal["wait"]] = "wait"
+    on_kind: WaitKind = "span"
+    on_seq: int | None = None
+    on_ids: list[int] | None = None
+
+
+@dataclass
+class ResumeEvent(_EventBase):
+    """The span identified by `seq` resumed after a wait."""
+
+    kind: ClassVar[Literal["resume"]] = "resume"
+
+
+@dataclass
+class TraceEvent(_EventBase):
+    """A `trace(...)` annotation on a span. `cached=True` for replayed traces."""
+
+    kind: ClassVar[Literal["trace"]] = "trace"
+    message: str = ""
+    cached: bool = False
+    detail: str = ""
+    progress: tuple[int, int] | None = None
+    state: str | None = None
+    level: TraceLevel = "info"
+    cost: dict[str, int | float] | None = None
+    edge: bool = False
+
+
+@dataclass
+class ErrorEvent(_EventBase):
+    """The span raised. `error` is `str(exc)`."""
+
+    kind: ClassVar[Literal["error"]] = "error"
+    error: str = ""
+    size: int = 0
+    own_size: int = 0
+    duration: float = 0.0
+    own_duration: float = 0.0
+    cached_duration: float = 0.0
+
+
+@dataclass
+class CancelEvent(_EventBase):
+    """The span was cancelled (asyncio.CancelledError)."""
+
+    kind: ClassVar[Literal["cancel"]] = "cancel"
+
+
+Event = (
+    SpawnEvent
+    | StartEvent
+    | EndEvent
+    | WaitEvent
+    | ResumeEvent
+    | TraceEvent
+    | ErrorEvent
+    | CancelEvent
+)
 
 
 # ── Sink protocols ──
@@ -199,26 +315,23 @@ class Runtime:
 
     def run(
         self,
-        entry: Callable[..., Any],
+        handle: "Handle[R]",
         *,
         label: str | None = None,
-        args: tuple[Any, ...] = (),
-        kwargs: dict[str, Any] | None = None,
         carry: dict[str, str] | None = None,
         interaction_sink: InteractionSink | None = None,
-    ) -> Any:
-        """Execute `entry` as a file-backed run. Sync; calls `asyncio.run`.
+    ) -> R:
+        """Execute `handle` as a file-backed run. Sync; calls `asyncio.run`.
 
-        The store path lives on this runtime (`self.store_path`); call sites
-        wanting a different `.cairns/` location build a new `Runtime`.
+        Pass an unconsumed `Handle` (e.g. `runtime.run(pipeline(urls))`).
+        The store path lives on this runtime (`self.store_path`); call
+        sites wanting a different `.cairns/` location build a new Runtime.
         """
         from cairns.run import run as _execute  # noqa: PLC0415
 
         return _execute(
-            entry,
+            handle,
             label=label,
-            args=args,
-            kwargs=kwargs,
             carry=carry,
             interaction_sink=interaction_sink,
             runtime=self,
@@ -226,14 +339,12 @@ class Runtime:
 
     async def arun(
         self,
-        entry: Callable[..., Any],
+        handle: "Handle[R]",
         *,
         label: str | None = None,
-        args: tuple[Any, ...] = (),
-        kwargs: dict[str, Any] | None = None,
         carry: dict[str, str] | None = None,
         interaction_sink: InteractionSink | None = None,
-    ) -> Any:
+    ) -> R:
         """Async variant of `run` for embedding inside an existing event loop.
 
         Use when something else owns `asyncio.run` — FastAPI, Textual,
@@ -243,16 +354,14 @@ class Runtime:
         from cairns.run import arun as _arun  # noqa: PLC0415
 
         return await _arun(
-            entry,
+            handle,
             label=label,
-            args=args,
-            kwargs=kwargs,
             carry=carry,
             interaction_sink=interaction_sink,
             runtime=self,
         )
 
-    def harness(self) -> "Any":
+    def harness(self) -> "Harness":
         """Build an async test Harness backed by this Runtime."""
         from cairns.testing import Harness  # noqa: PLC0415
 
@@ -291,7 +400,7 @@ class Run:
         self.interaction_sink = interaction_sink
 
         self._seq: itertools.count[int] = itertools.count(1)
-        self._token: Any = None
+        self._token: Token["Run | None"] | None = None
         self._on_exit = _on_exit
 
     def next_seq(self) -> int:
@@ -311,7 +420,7 @@ class Run:
         self._token = _run.set(self)
         return self
 
-    def __exit__(self, *exc: Any) -> None:
+    def __exit__(self, *exc: object) -> None:  # noqa: ARG002
         if self._token is not None:
             _run.reset(self._token)
             self._token = None
@@ -334,14 +443,18 @@ def current_run() -> Run:
     return rt
 
 
-def emit_event(kind: str, *, ts: float = 0.0, **kwargs: Any) -> Event:
-    """Emit an event to the active run's sink.
+def current_run_or_none() -> Run | None:
+    """Return the active Run, or None if none is active. Non-raising peek."""
+    return _run.get()
 
-    Stamps `ts = monotonic()` here when the caller didn't supply one.
+
+def emit_event(event: Event) -> Event:
+    """Emit a typed event to the active run's sink.
+
+    Stamps `ts = monotonic()` if the caller left it at the default (0.0).
     """
-    if ts == 0.0:
-        ts = time.monotonic()
-    event = Event(kind=kind, ts=ts, **kwargs)
+    if event.ts == 0.0:
+        event.ts = time.monotonic()
     current_run().sink.emit(event)
     return event
 
