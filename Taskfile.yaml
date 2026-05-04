@@ -14,13 +14,19 @@ tasks:
       - uvx twine check dist/*
 
   publish:
-    desc: Publish to PyPI. Token must be in macOS Keychain (`uvx keyring set https://upload.pypi.org/legacy/ __token__`).
+    desc: Publish to PyPI. Reads $PYPI_TOKEN from env (loaded from .env via devenv).
     deps: [check]
+    preconditions:
+      - sh: 'test -n "$PYPI_TOKEN"'
+        msg: "PYPI_TOKEN is not set. Add it to .env (devenv auto-loads dotenv)."
     cmds:
-      - uv publish --username __token__
+      - UV_PUBLISH_TOKEN="$PYPI_TOKEN" uv publish
 
   publish:test:
-    desc: Publish to TestPyPI. Token in keyring under https://test.pypi.org/legacy/.
+    desc: Publish to TestPyPI. Reads $PYPI_TEST_TOKEN (or $PYPI_TOKEN as fallback).
     deps: [check]
+    preconditions:
+      - sh: 'test -n "$PYPI_TEST_TOKEN" -o -n "$PYPI_TOKEN"'
+        msg: "Set PYPI_TEST_TOKEN (or PYPI_TOKEN) in .env."
     cmds:
-      - uv publish --publish-url https://test.pypi.org/legacy/ --username __token__
+      - UV_PUBLISH_TOKEN="${PYPI_TEST_TOKEN:-$PYPI_TOKEN}" uv publish --publish-url https://test.pypi.org/legacy/
