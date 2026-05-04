@@ -27,20 +27,20 @@ def _store_path(args: argparse.Namespace) -> str:
 
 
 def cmd_list(args: argparse.Namespace) -> None:
-    from cairn.run import show_runs
+    from cairns.run import show_runs
 
     show_runs(_store_path(args))
 
 
 def cmd_show(args: argparse.Namespace) -> None:
-    from cairn.run import show_trace
+    from cairns.run import show_trace
 
     run_id: str | None = getattr(args, "run_id", None)
     show_trace(_store_path(args), run_id=run_id)
 
 
 def cmd_output(args: argparse.Namespace) -> None:
-    from cairn.run import show_output
+    from cairns.run import show_output
 
     path: str = args.path
     if os.path.islink(path):
@@ -49,7 +49,7 @@ def cmd_output(args: argparse.Namespace) -> None:
 
 
 def cmd_gc(args: argparse.Namespace) -> None:
-    from cairn.run import gc, list_runs
+    from cairns.run import gc, list_runs
 
     store = _store_path(args)
     before: datetime | None = None
@@ -61,7 +61,7 @@ def cmd_gc(args: argparse.Namespace) -> None:
     # Show current state first
     runs = list_runs(store)
     if runs:
-        from cairn.run import show_runs
+        from cairns.run import show_runs
         show_runs(store)
 
     removed_runs, removed_outputs = gc(store, before=before, keep_latest=keep_latest)
@@ -77,7 +77,7 @@ def cmd_gc(args: argparse.Namespace) -> None:
 
 
 def cmd_run(script: str, entry_name: str, store: str, *, force: bool = False) -> None:
-    from cairn.run import run as cairn_run
+    from cairns.run import run as cairn_run
 
     # Load the script as a module
     script_dir = os.path.dirname(os.path.abspath(script))
@@ -116,7 +116,7 @@ def cmd_run(script: str, entry_name: str, store: str, *, force: bool = False) ->
 
     # --force: remove previous runs for this entry point + GC orphaned outputs
     if force:
-        from cairn.run import gc_outputs, list_runs, remove_run
+        from cairns.run import gc_outputs, list_runs, remove_run
         runs = [r for r in list_runs(store) if r.entry_name == label]
         for r in runs:
             remove_run(store, r.run_id)
@@ -125,7 +125,7 @@ def cmd_run(script: str, entry_name: str, store: str, *, force: bool = False) ->
             print(f"Force: removed {len(runs)} run(s), {len(removed)} output(s)", file=sys.stderr)
 
     try:
-        from cairn.tui import run_app
+        from cairns.tui import run_app
         run_app(entry, store_path=store, label=label)
     except ImportError:
         # Fallback to headless mode
@@ -142,11 +142,11 @@ def cmd_run(script: str, entry_name: str, store: str, *, force: bool = False) ->
 def cmd_browse(store: str) -> None:
     """Interactive run browser using Textual TUI."""
     try:
-        from cairn.tui import browse
+        from cairns.tui import browse
         browse(store)
     except ImportError:
         # Fallback: just list runs
-        from cairn.run import show_runs
+        from cairns.run import show_runs
         show_runs(store)
         print("Install cairn[tui] for interactive browsing: uv pip install cairn[tui]")
 

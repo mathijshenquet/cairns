@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 from pydantic import BaseModel
 
-from cairn import run, step
+from cairns import run, step
 
 
 class Analysis(BaseModel):
@@ -89,17 +89,19 @@ def test_unregistered_type_falls_through_to_json(tmp_path: Path) -> None:
 
 
 def test_missing_serializer_raises_on_read() -> None:
-    """Reading a stone whose tag has no registered serializer raises clearly."""
-    from cairn.core.serial import clear_serializers, from_jsonable
+    """Reading a record whose tag has no registered serializer raises clearly."""
+    from cairns.core.runtime import default_runtime
+    from cairns.core.serial import from_jsonable
 
-    clear_serializers()  # drops the pydantic default
+    saved = dict(default_runtime.serializers)
+    default_runtime.serializers.clear()
     try:
         form = {"__cairn_serial__": "cairn.nonsense:Gone", "v": {"x": 1}}
         with pytest.raises((TypeError, ModuleNotFoundError, AttributeError)):
             from_jsonable(form)
     finally:
-        # Reinstall defaults so later tests keep working.
-        clear_serializers()
+        default_runtime.serializers.clear()
+        default_runtime.serializers.update(saved)
 
 
 def test_list_of_pydantic_models(tmp_path: Path) -> None:

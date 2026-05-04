@@ -14,9 +14,9 @@ Run headless (stdin fallback):
 
 from __future__ import annotations
 
-from cairn import run, step, trace
-from cairn.core.patterns import cached_output
-from cairn.interaction import await_choice, await_confirm, await_input
+from cairns import run, step, trace
+from cairns.core.patterns import cached_output
+from cairns.interaction import await_choice, await_confirm, await_input
 
 
 @step
@@ -61,7 +61,6 @@ main = pipeline
 
 
 if __name__ == "__main__":
-    from cairn.interaction import StdinInteractionSink, set_interaction_sink
+    from cairns.interaction import StdinInteractionSink
 
-    set_interaction_sink(StdinInteractionSink())
-    print(run(pipeline, store_path=".cairn"))
+    print(run(pipeline, store_path=".cairn", interaction_sink=StdinInteractionSink()))

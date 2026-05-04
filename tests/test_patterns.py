@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from cairn import step, Handle, trace, cached_output, cached_tracing
-from cairn.core.testing import Runtime
+from cairns import step, Handle, trace, cached_output, cached_tracing
+from cairns.testing import Harness
 
 
 # ── Validated loop (research + validate + refine) ──
@@ -41,7 +41,7 @@ async def test_validated_loop() -> None:
             draft = await refine(draft, str(result["feedback"]))
         return draft
 
-    async with Runtime() as rt:
+    async with Harness() as rt:
         result = await validated("cats")
         assert "improved" in result
 
@@ -70,7 +70,7 @@ async def test_human_input_prefill() -> None:
         # Simulate first-time human input
         return "human says hello"
 
-    async with Runtime():
+    async with Harness():
         # First call — no cache, "human" provides answer
         r1 = await human_ask("what do you think?")
         assert r1 == "human says hello"
@@ -113,7 +113,7 @@ async def test_human_in_the_loop_iteration() -> None:
             spec = str(review["revised_spec"])
         return await generate(spec)
 
-    async with Runtime():
+    async with Harness():
         result = await iterate("basic spec")
         assert "more detail" in result  # second iteration used revised spec
 
@@ -124,7 +124,7 @@ async def test_human_in_the_loop_iteration() -> None:
 @pytest.mark.asyncio
 async def test_replayable_preserves_traces() -> None:
     """Replayable wrapper replays trace events from cache."""
-    from cairn import replayable
+    from cairns import replayable
 
     call_count = 0
 
@@ -137,7 +137,7 @@ async def test_replayable_preserves_traces() -> None:
 
     work = replayable(work_impl)
 
-    async with Runtime() as rt:
+    async with Harness() as rt:
         # First call — real execution
         assert await work(5) == 10
         assert call_count == 1
@@ -174,7 +174,7 @@ async def test_code_change_invalidates_cache() -> None:
         call_count += 1
         return x * 2
 
-    async with Runtime():
+    async with Harness():
         assert await compute_v1(5) == 10
         assert call_count == 1
 
@@ -211,7 +211,7 @@ async def test_scraper_pattern() -> None:
         parsed = [parse(await p) for p in pages]
         return [await p for p in parsed]
 
-    async with Runtime() as rt:
+    async with Harness() as rt:
         result = await scrape(["a.com", "b.com", "c.com"])
         assert len(result) == 3
         assert result[0] == {"title": "a.com"}
@@ -224,7 +224,7 @@ async def test_scraper_pattern() -> None:
 @pytest.mark.asyncio
 async def test_rate_limited_with_fanout() -> None:
     """rate_limited works correctly under fan-out."""
-    from cairn import rate_limited
+    from cairns import rate_limited
 
     max_concurrent = 0
     current = 0
@@ -239,7 +239,7 @@ async def test_rate_limited_with_fanout() -> None:
         current -= 1
         return x * 2
 
-    async with Runtime():
+    async with Harness():
         handles = [limited_work(i) for i in range(6)]
         results = [await h for h in handles]
         assert results == [0, 2, 4, 6, 8, 10]
@@ -265,12 +265,12 @@ async def test_deeply_nested() -> None:
     async def level1(x: int) -> int:
         return await level2(x)
 
-    async with Runtime() as rt:
+    async with Harness() as rt:
         assert await level1(10) == 11
 
         # Check trace tree: level1 → level2 → level3
         l1 = rt.trace.span("level1")
         l2 = rt.trace.span("level2")
         l3 = rt.trace.span("level3")
-        assert l2.parent_id == l1.id
-        assert l3.parent_id == l2.id
+        assert l2.parent_seq == l1.seq
+        assert l3.parent_seq == l2.seq

@@ -17,7 +17,7 @@ from __future__ import annotations
 import asyncio
 import os
 
-from cairn import step, run, trace
+from cairns import step, run, trace
 
 # Track state across runs via a file
 _state_file = ".cairn/failure_state"

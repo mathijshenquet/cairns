@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from cairn import step, run, trace
+from cairns import step, run, trace
 
 
 def test_resume_after_failure(tmp_path: Path) -> None:

@@ -1,7 +1,7 @@
 """Terminal viewer for Cairn traces and store contents.
 
 Usage:
-    from cairn.show import show_trace, show_runs, show_output, LiveRenderer
+    from cairns.show import show_trace, show_runs, show_output, LiveRenderer
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ import time
 from datetime import datetime
 from typing import Any
 
-from cairn.core import Event
+from cairns.core import Event
 from .gc import list_runs
 from .spans import SpanGraph
 
@@ -35,7 +35,7 @@ def _color(text: str, color: str) -> str:
 # Keys that are rendered specially or are part of the core event envelope.
 # Anything else in a trace event is shown as a generic `(k=v)` attr.
 TRACE_RESERVED = frozenset({
-    "e", "ts", "id", "parent", "name", "cached", "err", "by",
+    "e", "ts", "seq", "parent_seq", "name", "cached", "err", "by",
     "msg", "detail", "progress", "state", "level", "cost",
 })
 
@@ -125,19 +125,19 @@ class LiveRenderer:
             return "  " * self.graph.depth(sid)
 
         if kind == "spawn":
-            span_id = int(e["id"])
+            span_id = int(e["seq"])
             s = self.graph.spans.get(span_id)
             args_display = f"({s.args})" if s is not None and s.args else ""
             icon = _color("○", _DIM)
             self._print(f"  {relative_ts:8.3f}s {indent_for(span_id)}{icon} {_BOLD}{name_of(span_id)}{_RESET}{_DIM}{args_display}{_RESET}")
 
         elif kind == "start":
-            span_id = int(e["id"])
+            span_id = int(e["seq"])
             icon = _color("◉", _YELLOW)
             self._print(f"  {relative_ts:8.3f}s {indent_for(span_id)}{icon} {name_of(span_id)}")
 
         elif kind == "end":
-            span_id = int(e["id"])
+            span_id = int(e["seq"])
             s = self.graph.spans.get(span_id)
             cached = s is not None and s.status == "cached"
             duration = ""
@@ -151,19 +151,19 @@ class LiveRenderer:
                 self._print(f"  {relative_ts:8.3f}s {indent_for(span_id)}{icon} {name_of(span_id)} done{duration}")
 
         elif kind == "error":
-            span_id = int(e["id"])
+            span_id = int(e["seq"])
             s = self.graph.spans.get(span_id)
             err = (s.error if s is not None else None) or "unknown error"
             icon = _color("✗", _RED)
             self._print(f"  {relative_ts:8.3f}s {indent_for(span_id)}{icon} {name_of(span_id)} {_color(str(err), _RED)}")
 
         elif kind == "cancel":
-            span_id = int(e["id"])
+            span_id = int(e["seq"])
             icon = _color("⊘", _DIM)
             self._print(f"  {relative_ts:8.3f}s {indent_for(span_id)}{icon} {name_of(span_id)} {_color('cancelled', _DIM)}")
 
         elif kind == "trace":
-            parent_id = e.get("parent")
+            parent_id = e.get("parent_seq")
             d = (self.graph.depth(int(parent_id)) + 1) if parent_id is not None else 1
             indent = "  " * d
             line, style_color = _format_trace(e)
@@ -171,7 +171,7 @@ class LiveRenderer:
 
     def emit(self, event: Event) -> None:
         """Sink-compatible emit: convert Event to dict and render."""
-        from cairn.core import event_to_dict
+        from cairns.core import event_to_dict
         event.ts = time.monotonic()
         self.render_event(event_to_dict(event))
 
@@ -236,9 +236,9 @@ def show_runs(store_path: str) -> None:
 
 
 def show_output(path: str) -> None:
-    """Pretty-print a stone (directory) or a CAS result file."""
+    """Pretty-print a record (directory) or a CAS result file."""
     if os.path.isdir(path):
-        _show_stone(path)
+        _show_record(path)
         return
 
     with open(path, "r", encoding="utf-8") as f:
@@ -252,10 +252,10 @@ def show_output(path: str) -> None:
     print()
 
 
-def _show_stone(stone_path: str) -> None:
-    meta_path = os.path.join(stone_path, "metadata.json")
-    events_path = os.path.join(stone_path, "events.jsonl")
-    result_link = os.path.join(stone_path, "result")
+def _show_record(record_path: str) -> None:
+    meta_path = os.path.join(record_path, "metadata.json")
+    events_path = os.path.join(record_path, "events.jsonl")
+    result_link = os.path.join(record_path, "result")
 
     meta: dict[str, Any] = {}
     if os.path.isfile(meta_path):

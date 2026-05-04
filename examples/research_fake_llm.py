@@ -10,8 +10,8 @@ import asyncio
 import hashlib
 import random
 
-from cairn import step, run, trace
-from cairn import rate_limited
+from cairns import step, run, trace
+from cairns import rate_limited
 
 
 # ── Fake Claude API ──

@@ -7,7 +7,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from cairn import step, gc, list_runs, remove_run, remove_runs_before, run, trace
+from cairns import step, gc, list_runs, remove_run, remove_runs_before, run, trace
 
 
 def _store_files(store_path: str) -> set[str]:
@@ -22,11 +22,11 @@ def _stone_dirs(store_path: str) -> list[str]:
     if not os.path.isdir(cairns):
         return []
     return [
-        os.path.join(cairn.path, stone.name)
+        os.path.join(cairn.path, record.name)
         for cairn in os.scandir(cairns)
         if cairn.is_dir()
-        for stone in os.scandir(cairn.path)
-        if stone.is_dir()
+        for record in os.scandir(cairn.path)
+        if record.is_dir()
     ]
 
 
@@ -113,7 +113,7 @@ def test_remove_runs_before_keeps_latest(tmp_path: Path) -> None:
 
 
 def test_gc_outputs(tmp_path: Path) -> None:
-    """gc_outputs() removes stones and CAS entries not referenced by any remaining run."""
+    """gc_outputs() removes records and CAS entries not referenced by any remaining run."""
     store_path = _make_runs(tmp_path, n=3)
 
     store_before = _store_files(store_path)
@@ -121,12 +121,12 @@ def test_gc_outputs(tmp_path: Path) -> None:
     assert len(store_before) >= 3
     assert len(stones_before) >= 3
 
-    # Remove first two runs — their stones should now be unreachable.
+    # Remove first two runs — their records should now be unreachable.
     runs = list_runs(store_path)
     remove_run(store_path, runs[0].run_id)
     remove_run(store_path, runs[1].run_id)
 
-    from cairn.run import gc_outputs
+    from cairns.run import gc_outputs
     gc_outputs(store_path)
 
     # Every symlink under any remaining run's steps/ still resolves.
@@ -137,12 +137,12 @@ def test_gc_outputs(tmp_path: Path) -> None:
         for entry in os.scandir(steps_dir):
             if entry.is_symlink():
                 target = Path(entry.path).resolve()
-                assert target.exists(), f"steps/{entry.name} points to missing stone"
+                assert target.exists(), f"steps/{entry.name} points to missing record"
                 assert (target / "metadata.json").exists()
 
 
 def test_gc_full_cycle(tmp_path: Path) -> None:
-    """Full GC: remove old runs, sweep orphaned stones + CAS files."""
+    """Full GC: remove old runs, sweep orphaned records + CAS files."""
     store_path = _make_runs(tmp_path, n=5)
 
     store_before = len(_store_files(store_path))
@@ -177,7 +177,7 @@ def test_gc_with_shared_outputs(tmp_path: Path) -> None:
 
     remove_run(store_path, runs[0].run_id)
 
-    from cairn.run import gc_outputs
+    from cairns.run import gc_outputs
     gc_outputs(store_path)
 
     remaining_run = list_runs(store_path)[0]
@@ -190,7 +190,7 @@ def test_gc_with_shared_outputs(tmp_path: Path) -> None:
 
 
 def test_gc_removes_unreachable_stones(tmp_path: Path) -> None:
-    """Dropping every run makes stones unreachable; GC removes them."""
+    """Dropping every run makes records unreachable; GC removes them."""
     store_path = _make_runs(tmp_path, n=2)
 
     assert len(_stone_dirs(store_path)) >= 2
@@ -204,7 +204,7 @@ def test_gc_removes_unreachable_stones(tmp_path: Path) -> None:
             import shutil
             shutil.rmtree(entry)
 
-    from cairn.run import gc_outputs
+    from cairns.run import gc_outputs
     gc_outputs(store_path)
 
     assert _stone_dirs(store_path) == []

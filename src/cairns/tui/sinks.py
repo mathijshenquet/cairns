@@ -15,7 +15,7 @@ import itertools
 import time
 from typing import TYPE_CHECKING, Any, Mapping, cast
 
-from cairn.core import Event, event_to_dict
+from cairns.core import Event, event_to_dict
 
 from .messages import (
     ChoiceInteractionMessage,

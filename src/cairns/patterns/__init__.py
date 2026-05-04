@@ -7,8 +7,8 @@ from typing import Awaitable, Callable, ParamSpec, TypeVar
 
 import asyncio
 
-from .step import Handle, cached_output, cached_tracing, step, trace
-from .types import StepInfo, TraceRecord
+from cairns.core.step import Handle, cached_output, cached_tracing, step, trace
+from cairns.core.types import StepInfo, TraceRecord
 
 P = ParamSpec("P")
 R = TypeVar("R")

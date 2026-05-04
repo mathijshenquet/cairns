@@ -16,10 +16,10 @@ from __future__ import annotations
 
 from datetime import date
 
-from cairn import run, step, trace
-from cairn import rate_limited
+from cairns import run, step, trace
+from cairns import rate_limited
 
-from cairn.ext.claude import SEARCH_TOOLS, claude
+from cairns.ext.claude import SEARCH_TOOLS, claude
 
 
 COMPANIES = [

@@ -7,14 +7,14 @@ from pathlib import Path
 
 import pytest
 
-from cairn import step
-from cairn.core import CacheEntry, Event, MemoryStore, StoreStats
-from cairn.core.testing import Runtime, TraceInspector
+from cairns import step
+from cairns.core import Record, Event, MemoryStore, StoreStats
+from cairns.testing import Harness, TraceInspector
 
 
 def _end_for(inspector: TraceInspector, name: str) -> Event:
     span = inspector.span(name)
-    ends = [e for e in inspector.all_events if e.kind == "end" and e.id == span.id]
+    ends = [e for e in inspector.all_events if e.kind == "end" and e.seq == span.seq]
     assert ends, f"no end event for {name}"
     return ends[0]
 
@@ -24,7 +24,7 @@ def _end_for(inspector: TraceInspector, name: str) -> Event:
 
 def test_store_stats_memory():
     store = MemoryStore()
-    entry = CacheEntry(result={"x": 1}, traces=[], duration=0.1, own_duration=0.1)
+    entry = Record(result={"x": 1}, traces=[], duration=0.1, own_duration=0.1)
     stats = store.put("k1", entry)
     assert isinstance(stats, StoreStats)
     assert stats.size > 0
@@ -32,10 +32,10 @@ def test_store_stats_memory():
 
 
 def test_store_stats_filestore(tmp_path: Path) -> None:
-    from cairn.core import FileStore
+    from cairns.core import FileStore
 
     store = FileStore(str(tmp_path))
-    entry = CacheEntry(result="hello", traces=[], duration=0.0, own_duration=0.0)
+    entry = Record(result="hello", traces=[], duration=0.0, own_duration=0.0)
     stats = store.put("k1", entry)
     assert stats.size > 0
     assert stats.own_size == stats.size
@@ -59,7 +59,7 @@ async def test_own_time_sequential():
         b = await child(30)
         return a + b
 
-    async with Runtime() as rt:
+    async with Harness() as rt:
         await parent()
 
     end = _end_for(rt.trace, "parent")
@@ -84,7 +84,7 @@ async def test_own_time_gather():
         a, b = await asyncio.gather(child(40), child(40))
         return a + b
 
-    async with Runtime() as rt:
+    async with Harness() as rt:
         await parent()
 
     end = _end_for(rt.trace, "parent")
@@ -115,7 +115,7 @@ async def test_own_time_nested():
     async def a() -> int:
         return await b()
 
-    async with Runtime() as rt:
+    async with Harness() as rt:
         await a()
 
     end_a = _end_for(rt.trace, "a")
@@ -139,7 +139,7 @@ async def test_own_time_own_work():
         await asyncio.sleep(0.05)
         return 42
 
-    async with Runtime() as rt:
+    async with Harness() as rt:
         await compute()
 
     end = _end_for(rt.trace, "compute")
@@ -161,7 +161,7 @@ async def test_own_metrics_on_cached_hit():
         await asyncio.sleep(0.01)
         return x * 2
 
-    async with Runtime() as rt:
+    async with Harness() as rt:
         await leaf(3)  # populate
         await leaf(3)  # hit
 
@@ -190,7 +190,7 @@ async def test_own_metrics_on_error():
         await asyncio.sleep(0.01)
         raise RuntimeError("nope")
 
-    async with Runtime() as rt:
+    async with Harness() as rt:
         with pytest.raises(RuntimeError):
             await boom()
 
@@ -220,7 +220,7 @@ async def test_error_through_awaited_child():
     async def parent() -> int:
         return await bad()
 
-    async with Runtime() as rt:
+    async with Harness() as rt:
         with pytest.raises(RuntimeError):
             await parent()
 
@@ -252,7 +252,7 @@ async def test_spawn_without_await_cleanup_counts_as_await():
         orphan()  # spawn, discard handle — never awaited explicitly
         return 0
 
-    async with Runtime() as rt:
+    async with Harness() as rt:
         await parent()
 
     end = _end_for(rt.trace, "parent")
@@ -277,7 +277,7 @@ async def test_cancel_emits_no_metrics():
         await asyncio.sleep(10)
         return 1
 
-    async with Runtime() as rt:
+    async with Harness() as rt:
         h = slow()
         await asyncio.sleep(0.01)
         h.cancel()

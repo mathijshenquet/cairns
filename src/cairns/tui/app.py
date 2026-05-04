@@ -1,4 +1,4 @@
-"""CairnApp: the unified TUI (run selector → live or replayed run view)."""
+"""CairnsApp: the unified TUI (run selector → live or replayed run view)."""
 
 from __future__ import annotations
 
@@ -18,10 +18,11 @@ from textual.widgets import Footer, Header, Input, Static
 from textual.widgets import Tree as TextualTree
 from textual.widgets.tree import TreeNode
 
-from cairn.core import CompositeSink, Handle, set_sink, set_store
-from cairn.interaction import set_interaction_sink
-from cairn.run import RunInfo, RunManager, SymlinkTracker, list_runs
-from cairn.run.spans import SpanGraph
+from cairns.core import CompositeSink, FileStore, Handle
+from cairns.core.runtime import Run
+from cairns.run import RunDirSink, RunInfo, list_runs
+from cairns.run import _make_run_dir, _update_latest  # noqa: PLC2701
+from cairns.run.spans import SpanGraph
 
 from .messages import (
     ChoiceInteractionMessage,
@@ -35,7 +36,7 @@ from .sinks import TuiInteractionSink, TuiSink
 from .widgets import ChoicePanel, ConfirmPanel
 
 
-class CairnApp(App[None]):
+class CairnsApp(App[None]):
     """Unified TUI: run selector → run view (live or replayed)."""
 
     TITLE = "Cairn"
@@ -229,8 +230,8 @@ class CairnApp(App[None]):
         tree = self._tree
 
         if kind == "spawn":
-            span_id = int(e["id"])
-            parent_id = e.get("parent")
+            span_id = int(e["seq"])
+            parent_id = e.get("parent_seq")
             parent_node = (
                 self.span_tree_nodes.get(int(parent_id))
                 if parent_id is not None
@@ -243,10 +244,10 @@ class CairnApp(App[None]):
             self.span_tree_nodes[span_id] = node
 
         elif kind == "start":
-            self._refresh_label_chain(int(e["id"]))
+            self._refresh_label_chain(int(e["seq"]))
 
         elif kind == "end":
-            span_id = int(e["id"])
+            span_id = int(e["seq"])
             s = self.graph.spans.get(span_id)
             dur_str = ""
             if s is not None and s.start_ts is not None and s.end_ts is not None:
@@ -259,7 +260,7 @@ class CairnApp(App[None]):
             self._refresh_label_chain(span_id, include_self=False)
 
         elif kind == "error":
-            span_id = int(e["id"])
+            span_id = int(e["seq"])
             s = self.graph.spans.get(span_id)
             err = (s.error if s is not None else None) or "error"
             short = err if len(err) <= 50 else err[:47] + "..."
@@ -267,12 +268,12 @@ class CairnApp(App[None]):
             self._refresh_label_chain(span_id, include_self=False)
 
         elif kind == "cancel":
-            span_id = int(e["id"])
+            span_id = int(e["seq"])
             self._set_label(span_id, "cancelled")
             self._refresh_label_chain(span_id, include_self=False)
 
         elif kind == "trace":
-            parent_id = e.get("parent")
+            parent_id = e.get("parent_seq")
             if parent_id is None:
                 return
             parent_node = self.span_tree_nodes.get(int(parent_id))
@@ -291,16 +292,16 @@ class CairnApp(App[None]):
                 parent_node.add(display, data=node_data, allow_expand=False)
 
         elif kind in ("wait", "resume"):
-            self._refresh_label_chain(int(e["id"]))
+            self._refresh_label_chain(int(e["seq"]))
 
         # Refresh detail if the highlighted span (or a direct child) changed.
         if self.highlighted_span is not None:
             subject: int | None
             if kind == "trace":
-                parent = e.get("parent")
+                parent = e.get("parent_seq")
                 subject = int(parent) if parent is not None else None
             else:
-                sid = e.get("id")
+                sid = e.get("seq")
                 subject = int(sid) if sid is not None else None
             if subject is not None and self._is_self_or_ancestor(
                 self.highlighted_span, subject
@@ -396,14 +397,14 @@ class CairnApp(App[None]):
 
         traces = s.traces
 
-        # Result (from the stone's result symlink into the CAS). Route through
+        # Result (from the record's result symlink into the CAS). Route through
         # from_jsonable so pydantic envelopes etc. get unwrapped to their
         # original shape; fall back to the raw form for display.
         result_str: str | None = None
-        if s.stone_path and status in ("ok", "cached"):
-            result_link = os.path.join(s.stone_path, "result")
+        if s.record_path and status in ("ok", "cached"):
+            result_link = os.path.join(s.record_path, "result")
             if os.path.exists(result_link):
-                from cairn.core import from_jsonable
+                from cairns.core import from_jsonable
                 try:
                     with open(result_link, "r") as f:
                         data: dict[str, Any] = json.load(f)
@@ -558,26 +559,25 @@ class CairnApp(App[None]):
 
         def worker() -> None:
             import asyncio
-            rm = RunManager(self._store_path, self._label)
-            tracker = SymlinkTracker(rm, rm.sink)
+            runs_dir, run_id, run_dir = _make_run_dir(self._store_path, self._label)
+            store = FileStore(self._store_path)
+            run_sink = RunDirSink(run_dir)
             tui_sink = TuiSink(self)
-            sink = CompositeSink(tracker, tui_sink)
+            sink = CompositeSink(run_sink, tui_sink)
+
+            def _on_exit() -> None:
+                run_sink.close()
+                _update_latest(runs_dir, self._label, run_id)
 
             async def _run() -> Any:
-                store_token = set_store(rm.store)
-                sink_token = set_sink(sink)
-                interaction_token = set_interaction_sink(TuiInteractionSink(self))
-                try:
+                with Run(
+                    store=store,
+                    sink=sink,
+                    interaction_sink=TuiInteractionSink(self),
+                    _on_exit=_on_exit,
+                ):
                     handle = entry_fn()
                     return await handle
-                finally:
-                    from cairn.core import reset_sink, reset_store
-                    from cairn.interaction import reset_interaction_sink
-
-                    reset_interaction_sink(interaction_token)
-                    reset_store(store_token)
-                    reset_sink(sink_token)
-                    rm.close()
 
             try:
                 result = asyncio.run(_run())

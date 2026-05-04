@@ -1,9 +1,9 @@
-"""Cairn / stone storage backends.
+"""Cairn / record storage backends.
 
 A cairn is a directory keyed by `cairn_id = hash(identity, args)` holding an
-append-only stack of stones (immutable execution records). The CAS under
-`store/` holds value bytes only; stone-local scalars and event timing live
-inside each stone.
+append-only stack of records (immutable execution records). The CAS under
+`store/` holds value bytes only; record-local scalars and event timing live
+inside each record.
 """
 
 from __future__ import annotations
@@ -18,30 +18,30 @@ from typing import Any, Iterator, Protocol, cast
 
 from .lock import store_shared
 from .serial import from_jsonable, to_jsonable
-from .types import CacheEntry, TraceRecord
+from .types import Record, TraceRecord
 
 _MISSING = object()
 
 
 @dataclass(frozen=True)
 class StoreStats:
-    """Size metrics and address of a published stone."""
+    """Size metrics and address of a published record."""
 
     size: int
     own_size: int
     cairn_id: str | None = None
-    stone_id: str | None = None
-    stone_path: str | None = None
+    record_id: str | None = None
+    record_path: str | None = None
     result_hash: str | None = None
 
 
 @dataclass(frozen=True)
-class StoneInfo:
-    """Small metadata view needed to replay or display a stone."""
+class RecordInfo:
+    """Small metadata view needed to replay or display a record."""
 
     cairn_id: str | None
-    stone_id: str
-    stone_path: str
+    record_id: str
+    record_path: str
     short_name: str | None
     duration: float
     own_duration: float
@@ -50,23 +50,32 @@ class StoneInfo:
 class Store(Protocol):
     """Protocol for cache storage backends."""
 
-    def get(self, key: str, version: str | None = None) -> CacheEntry | None: ...
+    def get(self, key: str, version: str | None = None) -> Record | None: ...
 
     def put(
         self,
         key: str,
-        entry: CacheEntry,
+        entry: Record,
         *,
         version: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> StoreStats: ...
+
+    def iter_records(self, cairn_id: str) -> Iterator[Record]:
+        """Yield all records for `cairn_id`, newest-first.
+
+        Backs `Cairn` inspection. Errored records are included (consumers
+        filter as needed). MRO: same content shape as `get` but doesn't
+        skip errors or apply the `version` filter.
+        """
+        ...
 
 
 # ── Serialization helpers ──
 
 
 def trace_to_event(t: TraceRecord, start_ts: float) -> dict[str, Any]:
-    """Serialize a TraceRecord as a stone-relative event line."""
+    """Serialize a TraceRecord as a record-relative event line."""
     return {
         "kind": "trace",
         "ts": max(0.0, t.timestamp - start_ts),
@@ -85,7 +94,7 @@ def _event_to_trace(e: dict[str, Any]) -> TraceRecord:
     )
 
 
-def _result_payload(entry: CacheEntry) -> str:
+def _result_payload(entry: Record) -> str:
     """CAS payload: the value bytes, routed through the serializer registry.
 
     Typed values (Pydantic models, tuples, …) are wrapped with a tag so the
@@ -103,8 +112,8 @@ def _hash_payload(payload: str) -> str:
 
 
 @dataclass
-class _MemStone:
-    entry: CacheEntry
+class _MemRecord:
+    entry: Record
     version: str | None
 
 
@@ -112,43 +121,47 @@ class MemoryStore:
     """In-memory cairn stack for testing."""
 
     def __init__(self) -> None:
-        self._stacks: dict[str, list[_MemStone]] = {}
+        self._stacks: dict[str, list[_MemRecord]] = {}
 
-    def get(self, key: str, version: str | None = None) -> CacheEntry | None:
-        for stone in reversed(self._stacks.get(key, [])):
-            if stone.entry.error is not None:
+    def get(self, key: str, version: str | None = None) -> Record | None:
+        for record in reversed(self._stacks.get(key, [])):
+            if record.entry.error is not None:
                 continue
-            if version is not None and stone.version != version:
+            if version is not None and record.version != version:
                 continue
-            return stone.entry
+            return record.entry
         return None
 
     def put(
         self,
         key: str,
-        entry: CacheEntry,
+        entry: Record,
         *,
         version: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> StoreStats:
         md = metadata or {}
-        stone_id = f"mem-{len(self._stacks.get(key, [])) + 1}"
+        record_id = f"mem-{len(self._stacks.get(key, [])) + 1}"
         entry.cairn_id = key
-        entry.stone_id = stone_id
-        entry.stone_path = None
+        entry.record_id = record_id
+        entry.record_path = None
         entry.child_refs = list(md.get("children", []))
         payload = _result_payload(entry)
         result_hash = None if entry.error else _hash_payload(payload)
         entry.result_hash = result_hash
-        self._stacks.setdefault(key, []).append(_MemStone(entry=entry, version=version))
+        self._stacks.setdefault(key, []).append(_MemRecord(entry=entry, version=version))
         size = len(payload.encode("utf-8"))
         return StoreStats(
             size=size,
             own_size=size,
             cairn_id=key,
-            stone_id=stone_id,
+            record_id=record_id,
             result_hash=result_hash,
         )
+
+    def iter_records(self, cairn_id: str) -> Iterator[Record]:
+        for record in reversed(self._stacks.get(cairn_id, [])):
+            yield record.entry
 
 
 # ── File-backed store ──
@@ -157,11 +170,11 @@ class MemoryStore:
 import secrets
 
 
-def _new_stone_id() -> str:
+def _new_record_id() -> str:
     """RFC 9562 uuid7 — 48-bit ms timestamp + 74-bit randomness.
 
     Time-ordered by lexicographic filename sort, so `ls` on a cairn returns
-    stones in creation order without a separate index.
+    records in creation order without a separate index.
     """
     ms = time.time_ns() // 1_000_000
     rand = secrets.token_bytes(10)
@@ -177,8 +190,8 @@ def _new_stone_id() -> str:
     return str(u)
 
 
-def _read_meta(stone: str) -> dict[str, Any] | None:
-    meta_path = os.path.join(stone, "metadata.json")
+def _read_meta(record: str) -> dict[str, Any] | None:
+    meta_path = os.path.join(record, "metadata.json")
     if not os.path.isfile(meta_path):
         return None
     try:
@@ -188,32 +201,32 @@ def _read_meta(stone: str) -> dict[str, Any] | None:
         return None
 
 
-def _infer_cairn_id(stone_path: str, meta: dict[str, Any]) -> str | None:
+def _infer_cairn_id(record_path: str, meta: dict[str, Any]) -> str | None:
     value = meta.get("cairn_id")
     if isinstance(value, str):
         return value
-    cairn_dir = os.path.dirname(os.path.abspath(stone_path))
+    cairn_dir = os.path.dirname(os.path.abspath(record_path))
     return os.path.basename(cairn_dir) or None
 
 
-def read_stone_info(stone_path: str) -> StoneInfo | None:
-    """Read the scalar metadata for a stone without loading its result."""
-    meta = _read_meta(stone_path)
+def read_record_info(record_path: str) -> RecordInfo | None:
+    """Read the scalar metadata for a record without loading its result."""
+    meta = _read_meta(record_path)
     if meta is None:
         return None
-    return StoneInfo(
-        cairn_id=_infer_cairn_id(stone_path, meta),
-        stone_id=os.path.basename(stone_path),
-        stone_path=stone_path,
+    return RecordInfo(
+        cairn_id=_infer_cairn_id(record_path, meta),
+        record_id=os.path.basename(record_path),
+        record_path=record_path,
         short_name=meta.get("short_name"),
         duration=float(meta.get("duration", 0.0)),
         own_duration=float(meta.get("own_duration", 0.0)),
     )
 
 
-def iter_stone_events(stone_path: str) -> Iterator[dict[str, Any]]:
-    """Yield well-formed event records from a stone's events.jsonl."""
-    events_path = os.path.join(stone_path, "events.jsonl")
+def iter_record_events(record_path: str) -> Iterator[dict[str, Any]]:
+    """Yield well-formed event records from a record's events.jsonl."""
+    events_path = os.path.join(record_path, "events.jsonl")
     if not os.path.isfile(events_path):
         return
     try:
@@ -232,11 +245,11 @@ def iter_stone_events(stone_path: str) -> Iterator[dict[str, Any]]:
         return
 
 
-def child_stone_path(stone_path: str, child_index: int) -> str | None:
-    """Resolve a stone's ordered children/{index:03d} symlink."""
+def child_record_path(record_path: str, child_index: int) -> str | None:
+    """Resolve a record's ordered children/{index:03d} symlink."""
     if child_index < 0:
         return None
-    child = os.path.join(stone_path, "children", f"{child_index:03d}")
+    child = os.path.join(record_path, "children", f"{child_index:03d}")
     target = os.path.realpath(child)
     if not os.path.isdir(target):
         return None
@@ -245,8 +258,8 @@ def child_stone_path(stone_path: str, child_index: int) -> str | None:
     return target
 
 
-def _read_result(stone: str) -> Any:
-    link = os.path.join(stone, "result")
+def _read_result(record: str) -> Any:
+    link = os.path.join(record, "result")
     if not os.path.exists(link):
         return _MISSING
     try:
@@ -263,17 +276,17 @@ def _read_result(stone: str) -> Any:
     return from_jsonable(cast(Any, raw)["result"])
 
 
-def _read_traces(stone: str) -> list[TraceRecord]:
+def _read_traces(record: str) -> list[TraceRecord]:
     traces: list[TraceRecord] = []
-    for e in iter_stone_events(stone):
+    for e in iter_record_events(record):
         if e.get("kind") == "trace":
             traces.append(_event_to_trace(e))
     return traces
 
 
-def _children_resolve(stone: str) -> bool:
-    """Subtree integrity: every children/* symlink must resolve to a stone."""
-    child_dir = os.path.join(stone, "children")
+def _children_resolve(record: str) -> bool:
+    """Subtree integrity: every children/* symlink must resolve to a record."""
+    child_dir = os.path.join(record, "children")
     if not os.path.isdir(child_dir):
         return True
     for entry in os.scandir(child_dir):
@@ -285,35 +298,36 @@ def _children_resolve(stone: str) -> bool:
     return True
 
 
-def load_stone(stone_path: str) -> CacheEntry | None:
-    """Load a single stone from disk as a CacheEntry.
+def load_record(record_path: str) -> Record | None:
+    """Load a single record from disk as a Record.
 
-    Used by the carry resolver — a stone may live in any cairn, including a
+    Used by the carry resolver — a record may live in any cairn, including a
     synthetic one authored by the caller. Does **not** run subtree integrity
     checks: carry is an explicit opt-in by the caller.
     """
-    if not os.path.isdir(stone_path):
+    if not os.path.isdir(record_path):
         return None
-    meta = _read_meta(stone_path)
+    meta = _read_meta(record_path)
     if meta is None:
         return None
     if meta.get("error") is not None:
         return None
-    result = _read_result(stone_path)
+    result = _read_result(record_path)
     if result is _MISSING:
         return None
-    traces = _read_traces(stone_path)
-    return CacheEntry(
+    traces = _read_traces(record_path)
+    return Record(
         result=result,
         traces=traces,
         duration=float(meta.get("duration", 0.0)),
         own_duration=float(meta.get("own_duration", 0.0)),
         error=None,
-        cairn_id=_infer_cairn_id(stone_path, meta),
-        stone_id=os.path.basename(stone_path),
-        stone_path=stone_path,
+        cairn_id=_infer_cairn_id(record_path, meta),
+        record_id=os.path.basename(record_path),
+        record_path=record_path,
         result_hash=meta.get("result_hash"),
         child_refs=list(meta.get("children", []) or []),
+        tags=dict(meta.get("tags", {}) or {}),
     )
 
 
@@ -322,9 +336,9 @@ class FileStore:
 
     Layout::
 
-        {base}/cairns/{cairn_id}/{stone_id}/
+        {base}/cairns/{cairn_id}/{record_id}/
             metadata.json              # scalars, args_repr, children pointers
-            events.jsonl               # traces + child spawns, stone-relative ts
+            events.jsonl               # traces + child spawns, record-relative ts
             result -> ../../../store/{content_hash}.json   # optional (missing on error)
             children/000 -> ../../../{cid}/{sid}/          # ordered, per-spawn
         {base}/store/{content_hash}.json                    # `{"result": <value>}`
@@ -347,48 +361,85 @@ class FileStore:
 
     # ── read ──
 
-    def get(self, key: str, version: str | None = None) -> CacheEntry | None:
+    def get(self, key: str, version: str | None = None) -> Record | None:
         cairn_dir = os.path.join(self._cairns, key)
         if not os.path.isdir(cairn_dir):
             return None
-        for stone_id in sorted(os.listdir(cairn_dir), reverse=True):
-            if stone_id.startswith("."):
+        for record_id in sorted(os.listdir(cairn_dir), reverse=True):
+            if record_id.startswith("."):
                 continue
-            stone = os.path.join(cairn_dir, stone_id)
-            meta = _read_meta(stone)
+            record = os.path.join(cairn_dir, record_id)
+            meta = _read_meta(record)
             if meta is None:
                 continue
             if meta.get("error") is not None:
                 continue
             if version is not None and meta.get("version") != version:
                 continue
-            if not _children_resolve(stone):
+            if not _children_resolve(record):
                 continue
-            result = _read_result(stone)
+            result = _read_result(record)
             if result is _MISSING:
                 continue
-            traces = _read_traces(stone)
-            entry = CacheEntry(
+            traces = _read_traces(record)
+            entry = Record(
                 result=result,
                 traces=traces,
                 duration=float(meta.get("duration", 0.0)),
                 own_duration=float(meta.get("own_duration", 0.0)),
                 error=None,
                 cairn_id=key,
-                stone_id=stone_id,
-                stone_path=stone,
+                record_id=record_id,
+                record_path=record,
                 result_hash=meta.get("result_hash"),
                 child_refs=list(meta.get("children", []) or []),
+                tags=dict(meta.get("tags", {}) or {}),
             )
             return entry
         return None
+
+    def iter_records(self, cairn_id: str) -> Iterator[Record]:
+        cairn_dir = os.path.join(self._cairns, cairn_id)
+        if not os.path.isdir(cairn_dir):
+            return
+        for record_id in sorted(os.listdir(cairn_dir), reverse=True):
+            if record_id.startswith("."):
+                continue
+            record = os.path.join(cairn_dir, record_id)
+            meta = _read_meta(record)
+            if meta is None:
+                continue
+            error_str = meta.get("error")
+            if error_str is None:
+                result = _read_result(record)
+                if result is _MISSING:
+                    continue
+                traces = _read_traces(record)
+                err: Exception | None = None
+            else:
+                result = None
+                traces = _read_traces(record)
+                err = Exception(str(error_str))
+            yield Record(
+                result=result,
+                traces=traces,
+                duration=float(meta.get("duration", 0.0)),
+                own_duration=float(meta.get("own_duration", 0.0)),
+                error=err,
+                cairn_id=cairn_id,
+                record_id=record_id,
+                record_path=record,
+                result_hash=meta.get("result_hash"),
+                child_refs=list(meta.get("children", []) or []),
+                tags=dict(meta.get("tags", {}) or {}),
+            )
 
     # ── write ──
 
     def put(
         self,
         key: str,
-        entry: CacheEntry,
+        entry: Record,
         *,
         version: str | None = None,
         metadata: dict[str, Any] | None = None,
@@ -397,7 +448,7 @@ class FileStore:
         children: list[dict[str, Any]] = list(md.get("children") or [])
         events_stream: list[dict[str, Any]] = list(md.get("events") or [])
 
-        # Hold a shared store lock for the whole publication: CAS write + stone
+        # Hold a shared store lock for the whole publication: CAS write + record
         # tmp-dir + atomic rename. GC takes the exclusive lock and will wait for
         # every in-flight put to drain before sweeping.
         with store_shared(self._base):
@@ -414,7 +465,7 @@ class FileStore:
         self,
         *,
         key: str,
-        entry: CacheEntry,
+        entry: Record,
         version: str | None,
         md: dict[str, Any],
         children: list[dict[str, Any]],
@@ -429,16 +480,16 @@ class FileStore:
             if not os.path.exists(result_path):
                 self._atomic_write(result_path, payload)
 
-        stone_id = _new_stone_id()
+        record_id = _new_record_id()
         cairn_dir = os.path.join(self._cairns, key)
         os.makedirs(cairn_dir, exist_ok=True)
-        tmp_dir = os.path.join(cairn_dir, f".tmp-{stone_id}")
-        stone_dir = os.path.join(cairn_dir, stone_id)
+        tmp_dir = os.path.join(cairn_dir, f".tmp-{record_id}")
+        stone_dir = os.path.join(cairn_dir, record_id)
         os.makedirs(tmp_dir, exist_ok=False)
 
         # metadata.json
         metadata_children = [
-            {k: v for k, v in child.items() if k != "stone_path"}
+            {k: v for k, v in child.items() if k != "record_path"}
             for child in children
         ]
         meta = {
@@ -454,6 +505,7 @@ class FileStore:
             "result_repr": repr(entry.result)[:200],
             "args_repr": md.get("args_repr", {}),
             "children": metadata_children,
+            "tags": dict(md.get("tags") or entry.tags or {}),
         }
         with open(os.path.join(tmp_dir, "metadata.json"), "w", encoding="utf-8") as f:
             json.dump(meta, f, sort_keys=True, indent=2, default=str)
@@ -487,7 +539,7 @@ class FileStore:
             child_dir = os.path.join(tmp_dir, "children")
             os.makedirs(child_dir, exist_ok=True)
             for i, child in enumerate(children):
-                target = child.get("stone_path")
+                target = child.get("record_path")
                 if target:
                     os.symlink(
                         os.path.relpath(target, child_dir),
@@ -498,16 +550,16 @@ class FileStore:
 
         size = len(_result_payload(entry).encode("utf-8"))
         entry.cairn_id = key
-        entry.stone_id = stone_id
-        entry.stone_path = stone_dir
+        entry.record_id = record_id
+        entry.record_path = stone_dir
         entry.result_hash = result_hash
         entry.child_refs = metadata_children
         return StoreStats(
             size=size,
             own_size=size,
             cairn_id=key,
-            stone_id=stone_id,
-            stone_path=stone_dir,
+            record_id=record_id,
+            record_path=stone_dir,
             result_hash=result_hash,
         )
 
@@ -525,13 +577,13 @@ class FileStore:
 
 
 class OverlayStore:
-    """Read-overlay over a base Store, keyed by cairn_id → stone path.
+    """Read-overlay over a base Store, keyed by cairn_id → record path.
 
-    Hits in the overlay short-circuit to the referenced stone, bypassing both
+    Hits in the overlay short-circuit to the referenced record, bypassing both
     the version filter and the subtree-integrity check — carry is an explicit
     opt-in by the caller. Writes pass through to the base store unchanged.
 
-    A missing stone at an overlay path raises `FileNotFoundError`. Carry is
+    A missing record at an overlay path raises `FileNotFoundError`. Carry is
     an explicit opt-in; silent fallback would hide user error.
     """
 
@@ -539,14 +591,14 @@ class OverlayStore:
         self._overlay = dict(overlay)
         self._base = base
 
-    def get(self, key: str, version: str | None = None) -> CacheEntry | None:
+    def get(self, key: str, version: str | None = None) -> Record | None:
         path = self._overlay.get(key)
         if path is None:
             return self._base.get(key, version)
-        entry = load_stone(path)
+        entry = load_record(path)
         if entry is None:
             raise FileNotFoundError(
-                f"carry: no valid stone at {path!r} for cairn {key[:12]}…"
+                f"carry: no valid record at {path!r} for cairn {key[:12]}…"
             )
         entry.origin = "carried"
         return entry
@@ -554,9 +606,14 @@ class OverlayStore:
     def put(
         self,
         key: str,
-        entry: CacheEntry,
+        entry: Record,
         *,
         version: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> StoreStats:
         return self._base.put(key, entry, version=version, metadata=metadata)
+
+    def iter_records(self, cairn_id: str) -> Iterator[Record]:
+        # Carry is a read-time detour, not history. Inspection sees the
+        # base store's actual record stack.
+        return self._base.iter_records(cairn_id)

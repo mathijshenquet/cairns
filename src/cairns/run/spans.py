@@ -1,6 +1,6 @@
 """Span-tree reducer over the trace.jsonl event stream.
 
-Shared by `show.LiveRenderer` and `tui.CairnApp`: feed events through
+Shared by `show.LiveRenderer` and `tui.CairnsApp`: feed events through
 `SpanGraph.apply(event)` and read derived state off the graph.
 
 `effective_status(id)` bubbles the wait chain so a parent blocked on a
@@ -34,7 +34,7 @@ class Span:
     spawn_ts: float | None = None
     start_ts: float | None = None
     end_ts: float | None = None
-    stone_path: str | None = None
+    record_path: str | None = None
     origin: str | None = None  # "created" | "recalled" | "carried"
     error: str | None = None
     metrics: dict[str, Any] = field(default_factory=lambda: cast(dict[str, Any], {}))
@@ -67,29 +67,29 @@ class SpanGraph:
             self.first_ts = ts
 
         if kind == "spawn":
-            span_id = int(e["id"])
+            span_id = int(e["seq"])
             self.spans[span_id] = Span(
                 id=span_id,
-                parent=e.get("parent"),
+                parent=e.get("parent_seq"),
                 name=e.get("name", "?"),
                 args=str(e.get("args", "")),
                 spawn_ts=ts,
             )
 
         elif kind == "start":
-            s = self.spans.get(int(e["id"]))
+            s = self.spans.get(int(e["seq"]))
             if s is not None:
                 s.start_ts = ts
                 s.status = "running"
 
         elif kind in ("end", "error", "cancel"):
-            span_id = int(e["id"])
+            span_id = int(e["seq"])
             s = self.spans.get(span_id)
             if s is not None:
                 s.end_ts = ts
                 if kind == "end":
                     s.status = "cached" if e.get("cached") else "ok"
-                    s.stone_path = e.get("stone_path")
+                    s.record_path = e.get("record_path")
                     s.origin = e.get("origin")
                 elif kind == "error":
                     s.status = "error"
@@ -102,13 +102,13 @@ class SpanGraph:
             self.open_waits.pop(span_id, None)
 
         elif kind == "wait":
-            span_id = int(e["id"])
+            span_id = int(e["seq"])
             on_raw = e.get("on")
             on: dict[str, Any] = cast(dict[str, Any], on_raw) if isinstance(on_raw, dict) else {}
             wkind = on.get("kind")
             w: Wait | None = None
             if wkind == "span" and "id" in on:
-                w = Wait(kind="span", target=int(on["id"]))
+                w = Wait(kind="span", target=int(on["seq"]))
             elif wkind == "group":
                 ids_raw = cast(list[Any], on.get("ids") or [])
                 w = Wait(kind="group", target=[int(x) for x in ids_raw])
@@ -116,14 +116,14 @@ class SpanGraph:
                 self.open_waits.setdefault(span_id, []).append(w)
 
         elif kind == "resume":
-            stack = self.open_waits.get(int(e["id"]))
+            stack = self.open_waits.get(int(e["seq"]))
             if stack:
                 stack.pop()
                 if not stack:
-                    del self.open_waits[int(e["id"])]
+                    del self.open_waits[int(e["seq"])]
 
         elif kind == "trace":
-            parent_id = e.get("parent")
+            parent_id = e.get("parent_seq")
             if parent_id is not None and int(parent_id) in self.spans:
                 rec = {k: v for k, v in e.items() if k != "e"}
                 self.spans[int(parent_id)].traces.append(rec)

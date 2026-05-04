@@ -7,11 +7,11 @@ from pathlib import Path
 
 import pytest
 
-from cairn import step, run, trace
+from cairns import step, run, trace
 
 
 def test_run_creates_disk_layout(tmp_path: Path) -> None:
-    """run() creates store/ + cairns/ + runs/ with the stone layout."""
+    """run() creates store/ + cairns/ + runs/ with the record layout."""
     store_path = str(tmp_path / ".cairn")
 
     @step
@@ -32,15 +32,15 @@ def test_run_creates_disk_layout(tmp_path: Path) -> None:
     assert set(payload.keys()) == {"result"}
     assert payload["result"] == "hello world"
 
-    # Cairn holds stones; each stone has metadata + events + result symlink.
+    # Cairn holds records; each record has metadata + events + result symlink.
     cairns = tmp_path / ".cairn" / "cairns"
     assert cairns.is_dir()
-    stones = [p for p in cairns.glob("*/*") if p.is_dir()]
-    assert stones
-    stone = stones[0]
-    assert (stone / "metadata.json").is_file()
-    assert (stone / "events.jsonl").is_file()
-    assert (stone / "result").exists()
+    records = [p for p in cairns.glob("*/*") if p.is_dir()]
+    assert records
+    record = records[0]
+    assert (record / "metadata.json").is_file()
+    assert (record / "events.jsonl").is_file()
+    assert (record / "result").exists()
 
     # The merged run trace is still on disk.
     runs = tmp_path / ".cairn" / "runs"
@@ -55,7 +55,7 @@ def test_run_creates_disk_layout(tmp_path: Path) -> None:
 
 
 def test_run_creates_step_symlinks(tmp_path: Path) -> None:
-    """run() creates ordered step symlinks under runs/*/steps/ pointing at stones."""
+    """run() creates ordered step symlinks under runs/*/steps/ pointing at records."""
     store_path = str(tmp_path / ".cairn")
 
     @step
@@ -73,7 +73,7 @@ def test_run_creates_step_symlinks(tmp_path: Path) -> None:
 
     symlinks = [f for f in steps.iterdir() if f.is_symlink()]
     assert len(symlinks) >= 1
-    # Each symlink points to a stone directory (contains metadata.json).
+    # Each symlink points to a record directory (contains metadata.json).
     for link in symlinks:
         target = link.resolve()
         assert target.is_dir()
@@ -142,7 +142,7 @@ def test_run_with_fanout(tmp_path: Path) -> None:
 
 
 def test_cairn_stone_layout_and_recalled_subtree(tmp_path: Path) -> None:
-    """Runs publish immutable stones; cache hits replay child stone spans."""
+    """Runs publish immutable records; cache hits replay child record spans."""
     store_path = str(tmp_path / ".cairn")
     calls: dict[str, int] = {"leaf": 0, "root": 0}
 
@@ -162,14 +162,14 @@ def test_cairn_stone_layout_and_recalled_subtree(tmp_path: Path) -> None:
     assert calls == {"leaf": 1, "root": 1}
 
     cairns = tmp_path / ".cairn" / "cairns"
-    stones = [p for p in cairns.glob("*/*") if p.is_dir()]
-    assert stones
-    assert all((s / "metadata.json").exists() and (s / "events.jsonl").exists() for s in stones)
+    records = [p for p in cairns.glob("*/*") if p.is_dir()]
+    assert records
+    assert all((s / "metadata.json").exists() and (s / "events.jsonl").exists() for s in records)
 
-    root_stone = next(s for s in stones if json.loads((s / "metadata.json").read_text()).get("short_name") == "root")
+    root_stone = next(s for s in records if json.loads((s / "metadata.json").read_text()).get("short_name") == "root")
     root_meta = json.loads((root_stone / "metadata.json").read_text())
     assert root_meta["cairn_id"] == root_stone.parent.name
-    assert all("stone_path" not in child for child in root_meta["children"])
+    assert all("record_path" not in child for child in root_meta["children"])
     assert (root_stone / "children" / "000").is_symlink()
     root_event_lines = [
         json.loads(line)
@@ -178,7 +178,7 @@ def test_cairn_stone_layout_and_recalled_subtree(tmp_path: Path) -> None:
     ]
     root_spawn_events = [e for e in root_event_lines if e.get("kind") == "spawn"]
     assert root_spawn_events
-    assert all("stone_path" not in e for e in root_spawn_events)
+    assert all("record_path" not in e for e in root_spawn_events)
     assert root_spawn_events[0]["child_index"] == 0
 
     # Recalled-subtree replay emits a spawn for the child under the recalled parent.
@@ -190,7 +190,7 @@ def test_cairn_stone_layout_and_recalled_subtree(tmp_path: Path) -> None:
 
 
 def test_version_mismatch_forces_fresh_stone(tmp_path: Path) -> None:
-    """A stored stone at version A is not recalled when the current version is B."""
+    """A stored record at version A is not recalled when the current version is B."""
     store_path = str(tmp_path / ".cairn")
     calls = {"n": 0}
 
@@ -202,7 +202,7 @@ def test_version_mismatch_forces_fresh_stone(tmp_path: Path) -> None:
     assert run(_compute_v1, store_path=store_path) == "v1-result"
     assert calls == {"n": 1}
 
-    # Re-declare with a different version — should miss the cache and push a new stone.
+    # Re-declare with a different version — should miss the cache and push a new record.
     @step(memo=True, identity="pkg.compute", version="v2")
     async def _compute_v2() -> str:
         calls["n"] += 1
@@ -215,12 +215,12 @@ def test_version_mismatch_forces_fresh_stone(tmp_path: Path) -> None:
     cairns = tmp_path / ".cairn" / "cairns"
     cairn_dirs = [p for p in cairns.iterdir() if p.is_dir()]
     assert len(cairn_dirs) == 1
-    stone_ids = [s.name for s in cairn_dirs[0].iterdir() if s.is_dir()]
-    assert len(stone_ids) == 2
+    record_ids = [s.name for s in cairn_dirs[0].iterdir() if s.is_dir()]
+    assert len(record_ids) == 2
 
 
 def test_carry_overrides_resolver(tmp_path: Path) -> None:
-    """run(carry={...}) short-circuits to the pinned stone without executing."""
+    """run(carry={...}) short-circuits to the pinned record without executing."""
     store_path = str(tmp_path / ".cairn")
     calls = {"n": 0}
 
@@ -229,7 +229,7 @@ def test_carry_overrides_resolver(tmp_path: Path) -> None:
         calls["n"] += 1
         return f"real:{tag}"
 
-    # Seed the store with a real "A" stone.
+    # Seed the store with a real "A" record.
     assert run(pick, store_path=store_path, args=("A",)) == "real:A"
     assert calls == {"n": 1}
 
@@ -239,11 +239,11 @@ def test_carry_overrides_resolver(tmp_path: Path) -> None:
 
     stones_a = list((tmp_path / ".cairn" / "cairns" / cairn_id_a).iterdir())
     assert len(stones_a) == 1
-    stone_path = str(stones_a[0])
+    record_path = str(stones_a[0])
 
-    # Now run with tag="B" but carry the "A" stone at cairn_id(B). The body
-    # should not execute — the carried stone's result is returned verbatim.
-    result = run(pick, store_path=store_path, args=("B",), carry={cairn_id_b: stone_path})
+    # Now run with tag="B" but carry the "A" record at cairn_id(B). The body
+    # should not execute — the carried record's result is returned verbatim.
+    result = run(pick, store_path=store_path, args=("B",), carry={cairn_id_b: record_path})
     assert result == "real:A"
     assert calls == {"n": 1}  # still no new body execution
 
@@ -253,7 +253,7 @@ def test_carry_overrides_resolver(tmp_path: Path) -> None:
     assert carry_file.exists()
     import json as _json
     persisted = _json.loads(carry_file.read_text())
-    assert persisted == {cairn_id_b: stone_path}
+    assert persisted == {cairn_id_b: record_path}
 
     # And the run's trace records origin=carried on the end event.
     with open(run_dirs[-1] / "trace.jsonl", "r") as f:
@@ -267,7 +267,7 @@ def test_carry_overrides_resolver(tmp_path: Path) -> None:
 
 
 def test_error_stones_keep_trace_events(tmp_path: Path) -> None:
-    """Error stones preserve traces in events.jsonl for later inspection."""
+    """Error records preserve traces in events.jsonl for later inspection."""
     store_path = str(tmp_path / ".cairn")
 
     @step
@@ -278,8 +278,8 @@ def test_error_stones_keep_trace_events(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError):
         run(fail, store_path=store_path)
 
-    stones = [p for p in (tmp_path / ".cairn" / "cairns").glob("*/*") if p.is_dir()]
-    fail_stone = next(s for s in stones if json.loads((s / "metadata.json").read_text()).get("short_name") == "fail")
+    records = [p for p in (tmp_path / ".cairn" / "cairns").glob("*/*") if p.is_dir()]
+    fail_stone = next(s for s in records if json.loads((s / "metadata.json").read_text()).get("short_name") == "fail")
     meta = json.loads((fail_stone / "metadata.json").read_text())
     assert meta["error"] == "boom"
 
@@ -375,7 +375,7 @@ def test_cached_child_replay_does_not_make_parent_time_go_backwards(tmp_path: Pa
         trace("after child")
         return value
 
-    # Warm the child's stone. The parent still executes live on the second run.
+    # Warm the child's record. The parent still executes live on the second run.
     run(parent, store_path=store_path)
     run(parent, store_path=store_path)
 
@@ -400,7 +400,7 @@ def test_cached_child_replay_does_not_make_parent_time_go_backwards(tmp_path: Pa
 
 
 def test_subtree_integrity_skips_stones_with_missing_children(tmp_path: Path) -> None:
-    """A parent stone whose child stone was GC'd is skipped on recall."""
+    """A parent record whose child record was GC'd is skipped on recall."""
     store_path = str(tmp_path / ".cairn")
     calls = {"parent": 0, "child": 0}
 
@@ -417,7 +417,7 @@ def test_subtree_integrity_skips_stones_with_missing_children(tmp_path: Path) ->
     assert run(parent, store_path=store_path) == "c"
     assert calls == {"parent": 1, "child": 1}
 
-    # Nuke the child stone, leaving the parent's children/000 pointer dangling.
+    # Nuke the child record, leaving the parent's children/000 pointer dangling.
     cairns = tmp_path / ".cairn" / "cairns"
     for cairn_dir in cairns.iterdir():
         for stone_dir in cairn_dir.iterdir():
@@ -426,7 +426,7 @@ def test_subtree_integrity_skips_stones_with_missing_children(tmp_path: Path) ->
                 import shutil
                 shutil.rmtree(stone_dir)
 
-    # Rerun: parent's stone is no longer recallable → body executes again.
+    # Rerun: parent's record is no longer recallable → body executes again.
     assert run(parent, store_path=store_path) == "c"
     assert calls["parent"] == 2
     assert calls["child"] == 2

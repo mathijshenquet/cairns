@@ -13,7 +13,7 @@ import json
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
-from cairn import trace
+from cairns import trace
 
 if TYPE_CHECKING:
     from pydantic import BaseModel

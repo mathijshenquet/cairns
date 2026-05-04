@@ -7,16 +7,16 @@ import os
 import time
 from typing import Any
 
-from .context import Event
+from .runtime import Event
 
 
 def event_to_dict(event: Event) -> dict[str, Any]:
     """Convert an Event to a JSON-serializable dict."""
     d: dict[str, Any] = {"e": event.kind, "ts": event.ts}
-    if event.id is not None:
-        d["id"] = event.id
-    if event.parent_id is not None:
-        d["parent"] = event.parent_id
+    if event.seq is not None:
+        d["seq"] = event.seq
+    if event.parent_seq is not None:
+        d["parent_seq"] = event.parent_seq
     if event.name is not None:
         d["name"] = event.name
     if event.message is not None:

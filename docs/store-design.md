@@ -10,8 +10,8 @@ builds directly on the [nominal identity & layered storage](todo/nominal-identit
 notes.
 
 The central primitive is the **cairn**: a location (keyed by computation
-identity) holding a stack of **stones** (immutable execution records). The
-project name is the data structure — stones piled over time at a fixed
+identity) holding a stack of **records** (immutable execution records). The
+project name is the data structure — records piled over time at a fixed
 location.
 
 This doc is organized around cairns. Content-addressed byte storage and
@@ -20,19 +20,19 @@ a reader who only cares about the cairn idea can stop after the GC section.
 
 ## Core claims
 
-- **A cairn is a stack of stones.** A cairn is derived from a function, it is
+- **A cairn is a stack of records.** A cairn is derived from a function, it is
   is identified by `hash(identity, *args)`, where `identity` defaults to the fully-qualified 
-  of the function. A stone is keyed by a uuid7 (chronologically sortable by filename) and
+  of the function. A record is keyed by a uuid7 (chronologically sortable by filename) and
   carries a `version` (defaulting to a hash of the functions ast) in its 
   metadata alongside the execution record: events, optional result pointer, 
-  pointers to specific child stones on other cairns. Stones are immutable once 
+  pointers to specific child records on other cairns. Records are immutable once 
   published; a cairn's stack is append-only.
 - **A run is a resolver, not a first-class object.** Executing a pipeline
-  resolves each encountered cairn to a stone via one of three outcomes:
-  **created** (execute fresh, push stone), **recalled** (pick an existing
-  stone from the stack — this is the cache), or **carried** (the run was
-  pre-seeded with a stone for this cairn — this is surgery). The merged
-  trace replays each resolved stone's events into a central stream.
+  resolves each encountered cairn to a record via one of three outcomes:
+  **created** (execute fresh, push record), **recalled** (pick an existing
+  record from the stack — this is the cache), or **carried** (the run was
+  pre-seeded with a record for this cairn — this is surgery). The merged
+  trace replays each resolved record's events into a central stream.
 - **Every cross-layer reference is a symlink.** GC walks the filesystem;
   `ls` shows every dep; `find -L` enumerates them. No JSON edges.
 - **External references use indirect roots**, Nix-style. `cairn checkout`
@@ -44,22 +44,22 @@ a reader who only cares about the cairn idea can stop after the GC section.
 ```
 .cairn/
   cairns/{cairn_id}/                   # one dir per computation (identity, args)
-    {stone_uuid}/                      # one dir per execution; uuid7, chronological
+    {record_uuid}/                      # one dir per execution; uuid7, chronological
       metadata.json                    # version, duration, size, origin, ast_hash, *_repr, ts
-      events.jsonl                     # own events, timestamps relative to stone start
+      events.jsonl                     # own events, timestamps relative to record start
       result      -> ../../../store/{content_hash}            # optional, see Appendix A
       args/                            # optional; only when store_args=True
         0         -> ../../../../store/{content_hash_a}
         url       -> ../../../../store/{content_hash_b}
       children/
-        000       -> ../../../{child_cairn_id}/{child_stone_uuid}/
-        001       -> ../../../{child_cairn_id}/{child_stone_uuid}/
+        000       -> ../../../{child_cairn_id}/{child_record_uuid}/
+        001       -> ../../../{child_cairn_id}/{child_record_uuid}/
   runs/{entry}-{ts}/                   # one dir per run
     trace.jsonl                        # merged, seq-numbered, tailable central stream
     steps/                             # the run's resolved walk, ordered by seq
-      000-{short_name} -> ../../../cairns/{cairn_id}/{stone_uuid}/
-      001-{short_name} -> ../../../cairns/{cairn_id}/{stone_uuid}/
-      005-{short_name}/                # carried: a stone-shaped dir owned by the run
+      000-{short_name} -> ../../../cairns/{cairn_id}/{record_uuid}/
+      001-{short_name} -> ../../../cairns/{cairn_id}/{record_uuid}/
+      005-{short_name}/                # carried: a record-shaped dir owned by the run
         metadata.json
         events.jsonl
         result     -> ../../../../store/{content_hash}
@@ -72,20 +72,20 @@ a reader who only cares about the cairn idea can stop after the GC section.
 `metadata.json` holds only scalars and display strings. Cross-layer
 pointers are always symlinks.
 
-## Cairns of stones
+## Cairns of records
 
 A cairn is a directory keyed by `cairn_id = hash(identity, *args)`. Inside,
-a stack of stones — each one a self-contained record of one execution.
-Stones are immutable once published. The stack is append-only: every
-execution pushes a new stone; nothing is overwritten, ever.
+a stack of records — each one a self-contained record of one execution.
+Records are immutable once published. The stack is append-only: every
+execution pushes a new record; nothing is overwritten, ever.
 
-A stone is partitioned — it describes exactly one span with its own events
-and nothing else. Grandchildren live in *their* cairns' stones and are
-referenced via `children/*` symlinks. A stone pins *which* child stone it
+A record is partitioned — it describes exactly one span with its own events
+and nothing else. Grandchildren live in *their* cairns' records and are
+referenced via `children/*` symlinks. A record pins *which* child record it
 spawned, not just which child cairn — so replay follows the exact historical
 subtree, not the current top-of-stack of the child cairn.
 
-A stone's `version` lives in its metadata, not in the cairn_id. The stack
+A record's `version` lives in its metadata, not in the cairn_id. The stack
 of a cairn can therefore span multiple versions — every execution of this
 computation, across all code revisions, piles up in the same directory.
 That makes the cairn a natural place to observe drift (ast_hash
@@ -97,22 +97,22 @@ everything.
 ## Runs as resolvers
 
 A run is not a cairn. It's a walk: executing a pipeline resolves each
-encountered cairn to a stone and replays events into a merged trace. Three
+encountered cairn to a record and replays events into a merged trace. Three
 outcomes per cairn:
 
-1. **Created** — executed the body fresh, pushed a new stone, used it.
-2. **Recalled** — picked an existing stone from the cairn's stack (cache
-   hit), no body executed, stone's events streamed into the merged trace
+1. **Created** — executed the body fresh, pushed a new record, used it.
+2. **Recalled** — picked an existing record from the cairn's stack (cache
+   hit), no body executed, record's events streamed into the merged trace
    with rebased timing.
-3. **Carried** — the run was seeded with a stone for this cairn (via
-   `run(..., carry={cairn_id: stone})`), used without consulting the
+3. **Carried** — the run was seeded with a record for this cairn (via
+   `run(..., carry={cairn_id: record})`), used without consulting the
    stack. This is how surgery, mocking, and branching work.
 
 The run's `trace.jsonl` is live-written as events fire. The `steps/` dir
-is a human-browsable flat view of the stones the run touched, ordered by
+is a human-browsable flat view of the records the run touched, ordered by
 resolution seq; tree structure lives in the trace.
 
-Operationally, `resolve: cairn_id → stone`:
+Operationally, `resolve: cairn_id → record`:
 
 ```
 resolve(cairn_id):
@@ -121,38 +121,38 @@ resolve(cairn_id):
     if memo and pick(cairn.stack) is not None:  # outcome: recalled
         return pick(cairn.stack)                # pluggable; default Appendix B
     # outcome: created
-    stone = execute()
-    push(cairn, stone)
-    return stone
+    record = execute()
+    push(cairn, record)
+    return record
 ```
 
 `memo=True` vs `memo=False` is the only semantic knob: does the resolver
-consult the stack? Both produce a stone (every execution is recorded);
+consult the stack? Both produce a record (every execution is recorded);
 they differ only in whether the stack is read first.
 
-### Carried stones enable surgery
+### Carried records enable surgery
 
-Carrying a stone means the run has been pre-seeded with a specific stone
-for a specific cairn. The resolver short-circuits to that stone without
-executing or consulting the stack. A carried stone can either be an
-existing stone from some cairn (just a symlink in `steps/`) or a synthetic
-stone the caller constructed from scratch (a stone-shaped directory
+Carrying a record means the run has been pre-seeded with a specific record
+for a specific cairn. The resolver short-circuits to that record without
+executing or consulting the stack. A carried record can either be an
+existing record from some cairn (just a symlink in `steps/`) or a synthetic
+record the caller constructed from scratch (a record-shaped directory
 embedded *inside* the run's `steps/` dir — the run owns it; it doesn't
 pollute any cairn's stack).
 
 This single primitive covers several previously-distinct features:
 
 - **Result override**: force step X to return Y. Construct a synthetic
-  stone with result Y, carry it under cairn_id(X).
+  record with result Y, carry it under cairn_id(X).
 - **Branch from a past run**: re-run as in run A but with one thing
   changed. Seed `carry` from A's resolution map, drop the entry for the
   cairn you want to re-execute. Downstream cairns whose inputs changed
-  will cache-miss and produce new stones.
-- **Mocking in tests**: construct stones for cairns you want to stub; run.
-  Carrying a stone *is* the mock.
-- **Pinning**: always use stone S from cairn K for this run. Carry it.
+  will cache-miss and produce new records.
+- **Mocking in tests**: construct records for cairns you want to stub; run.
+  Carrying a record *is* the mock.
+- **Pinning**: always use record S from cairn K for this run. Carry it.
 
-Carried stones have `origin: carried` in their metadata, and trace
+Carried records have `origin: carried` in their metadata, and trace
 renderers mark them distinctly (e.g., dashed nodes in the TUI). The carry
 map is recorded in the run's metadata so a surgical run is reproducible.
 
@@ -163,8 +163,8 @@ memo=False steps broke the abstraction: two executions of the same
 cache_key produced different outputs, but the filesystem had one slot.
 Overwriting lost history; sidecar schemes reintroduced UUIDs.
 
-Under cairns of stones, this problem doesn't arise. memo=False pushes a
-new stone; memo=True on a cache miss also pushes a new stone. The stack
+Under cairns of records, this problem doesn't arise. memo=False pushes a
+new record; memo=True on a cache miss also pushes a new record. The stack
 records every execution. The cache is a pick-from-stack policy, not a
 storage slot. Overwriting is not a concept — there is nothing to overwrite.
 
@@ -174,16 +174,16 @@ Three naming systems, each in its proper scope:
 
 - **`cairn_id`** identifies a computation: `hash(identity, *args)`.
   Persistent, global.
-- **`stone_id`** identifies one execution: uuid7, unique within a cairn,
+- **`record_id`** identifies one execution: uuid7, unique within a cairn,
   chronologically sortable. Persistent but meaningful only alongside its
   cairn.
 - **`seq`** is a run-local integer, assigned at trace-merge time,
   meaningful only inside that run.
 
-A stone's `events.jsonl` describes exactly one span. No line inside it
+A record's `events.jsonl` describes exactly one span. No line inside it
 needs to name "which span" — there's only one. Body events implicitly
-belong to the stone. Spawn events reference child stones by `(cairn_id,
-stone_id)`. The end event terminates the single span.
+belong to the record. Spawn events reference child records by `(cairn_id,
+record_id)`. The end event terminates the single span.
 
 ### cairn_ids are statically computable
 
@@ -206,54 +206,54 @@ works automatically without ever consulting values.
 
 ### Replay mechanics
 
-On resolution of cairn K to stone S in a live run:
+On resolution of cairn K to record S in a live run:
 
 1. Mint a fresh seq for this occurrence.
 2. If origin is *created*: stream the fresh execution's events (they go
-   to the new stone's file and the merged trace simultaneously).
+   to the new record's file and the merged trace simultaneously).
 3. If origin is *recalled* or *carried*: open
    `cairns/K/{S}/events.jsonl`, stream events into the merged trace,
    attaching the fresh seq and rebasing relative timestamps.
 4. For each spawn event encountered (carrying child `(cairn_id,
-   stone_id)`), recurse: mint a new seq, open the child's events, stream
+   record_id)`), recurse: mint a new seq, open the child's events, stream
    through.
 
 Seq assignment happens only at the boundary where events enter the
-merged stream. "Same stone referenced twice in one run" isn't a special
+merged stream. "Same record referenced twice in one run" isn't a special
 case — each occurrence gets its own seq, its own branch in the tree.
 
 ## Trace shapes
 
 Two distinct files with distinct roles:
 
-- `cairns/{id}/{stone}/events.jsonl` — authoritative record of one
-  execution. Timestamps relative to the stone's start, never wall-clock.
-  Immutable once the stone is published.
+- `cairns/{id}/{record}/events.jsonl` — authoritative record of one
+  execution. Timestamps relative to the record's start, never wall-clock.
+  Immutable once the record is published.
 - `runs/{ts}/trace.jsonl` — merged central stream produced at resolution
-  time. Each stone's events are replayed into it with fresh seqs and
+  time. Each record's events are replayed into it with fresh seqs and
   rebased timestamps. Best-effort ordering under concurrency — strict
-  ordering lives inside each stone's events.jsonl; the merge interleaves.
+  ordering lives inside each record's events.jsonl; the merge interleaves.
 
-### Event line in a stone
+### Event line in a record
 
 ```json
 {"kind": "trace", "ts": 0.123, "msg": "fetching", "level": "info"}
 {"kind": "spawn", "ts": 0.200, "end_ts": 0.450, "cairn_id": "ab12...",
- "stone_id": "7f3c...", "short_name": "extract", "error": null}
+ "record_id": "7f3c...", "short_name": "extract", "error": null}
 {"kind": "end",   "ts": 1.200, "duration": 1.20, "own_duration": 0.40,
  "size": 2048, "own_size": 128}
 ```
 
 The `start` event is implicit. Spawn events bracket the child with timing
 so the parent's timeline renders child duration bars without opening the
-child's file; `(cairn_id, stone_id)` is the pointer for progressive
+child's file; `(cairn_id, record_id)` is the pointer for progressive
 expansion.
 
 ### Event line in a run trace
 
 ```json
 {"kind": "start", "seq": 47, "parent_seq": 12, "cairn_id": "ab12...",
- "stone_id": "7f3c...", "origin": "recalled", "name": "pipeline:extract"}
+ "record_id": "7f3c...", "origin": "recalled", "name": "pipeline:extract"}
 {"kind": "trace", "seq": 47, "ts": 0.123, "msg": "fetching"}
 {"kind": "end",   "seq": 47, "ts": 1.200, "duration": 1.20,
  "own_duration": 0.40, "size": 2048, "own_size": 128}
@@ -268,22 +268,22 @@ span as executed, recalled, or carried.
 Every cross-layer pointer is a filesystem symlink, not a JSON field:
 
 ```
-cairns/{cairn_id}/{stone_uuid}/
+cairns/{cairn_id}/{record_uuid}/
   result        -> ../../../store/{content_hash}                     # optional
   args/0        -> ../../../../store/{content_hash_a}                # optional
   args/url      -> ../../../../store/{content_hash_b}                # optional
-  children/000  -> ../../../{child_cairn_id}/{child_stone_uuid}/
-  children/001  -> ../../../{child_cairn_id}/{child_stone_uuid}/
+  children/000  -> ../../../{child_cairn_id}/{child_record_uuid}/
+  children/001  -> ../../../{child_cairn_id}/{child_record_uuid}/
 ```
 
 Positional args get integer names (`args/0`, `args/1`); keyword args get
 their param name. Children are ordered by spawn occurrence (first becomes
 `000`), giving naturally-sorted `ls`. Duplicate child references are fine
-— invoking the same child cairn twice produces two child stones with two
+— invoking the same child cairn twice produces two child records with two
 ordinal entries.
 
-Child pointers are **stone-specific**, not cairn-specific. A parent
-records which child stones it actually spawned during *its* execution.
+Child pointers are **record-specific**, not cairn-specific. A parent
+records which child records it actually spawned during *its* execution.
 Replay follows those exact pointers — it does not re-resolve to the
 current top-of-stack of the child cairn. Re-resolving would desync a
 parent's recorded subtree from what it really ran; pinning in the
@@ -316,13 +316,13 @@ lets a trace render usefully after L0 bytes are pruned.
 
 ## Publication protocol
 
-Because stones are immutable once visible, publication must be atomic.
-Each executing stone writes to a temporary directory
+Because records are immutable once visible, publication must be atomic.
+Each executing record writes to a temporary directory
 (`cairns/{cairn_id}/.tmp-{uuid}/`), appending `events.jsonl`
 incrementally. On the `end` event, `metadata.json` is written and the
 directory is renamed to its final location
-(`cairns/{cairn_id}/{stone_uuid}/`). Atomic directory rename on Unix means
-readers see either nothing or a complete stone.
+(`cairns/{cairn_id}/{record_uuid}/`). Atomic directory rename on Unix means
+readers see either nothing or a complete record.
 
 A crash mid-execution leaves an abandoned `.tmp-*` directory with no
 `metadata.json`. Readers ignore these (trivial predicate: metadata
@@ -330,7 +330,7 @@ missing). A janitor pass on startup, or on next GC, deletes `.tmp-*`
 dirs older than N minutes.
 
 Concurrent executions of the same cairn each write to their own
-`.tmp-{uuid}/` and rename to unique stone_ids — no contention, no
+`.tmp-{uuid}/` and rename to unique record_ids — no contention, no
 locking on the write path.
 
 ## `cairn checkout`
@@ -338,12 +338,12 @@ locking on the write path.
 Git-flavoured. Materializes a stored value at a user-chosen path:
 
 ```sh
-cairn checkout <hash | cairn_id | cairn_id:stone_id> <target-path>
+cairn checkout <hash | cairn_id | cairn_id:record_id> <target-path>
 ```
 
 - Content_hash → L0 bytes copied/symlinked to target.
-- Cairn_id → resolves to that cairn's top valid stone, then its result.
-- Cairn_id:stone_id → exact stone's result. Useful for pinning a specific
+- Cairn_id → resolves to that cairn's top valid record, then its result.
+- Cairn_id:record_id → exact record's result. Useful for pinning a specific
   historical execution.
 
 Two things happen atomically:
@@ -378,33 +378,33 @@ known roots, mark reachable, delete the rest.
 
 1. Collect initial live set from runs and live checkouts.
 2. From each live run dir, follow every `steps/*` entry. Each is either
-   a symlink to a stone in `cairns/…` (recalled/created) or a
-   stone-shaped dir embedded in the run itself (carried). Both count as
-   stones.
-3. From each live stone, follow `result`, any `args/*`, and every
-   `children/*` symlink — L0 entries and more stones join the live set.
+   a symlink to a record in `cairns/…` (recalled/created) or a
+   record-shaped dir embedded in the run itself (carried). Both count as
+   records.
+3. From each live record, follow `result`, any `args/*`, and every
+   `children/*` symlink — L0 entries and more records join the live set.
    Transitively closes.
-4. A cairn is live iff any of its stones is live.
+4. A cairn is live iff any of its records is live.
 
 **Stack-pruning policy.** Beyond pure reachability, per-cairn keep
 policies generate additional synthetic roots before the mark phase:
 
 - Default: pure reachability.
-- `keep_top_n`: keep the top N stones of every cairn regardless.
+- `keep_top_n`: keep the top N records of every cairn regardless.
   Freshness floor against aggressive run deletion.
-- `keep_within`: keep stones created within the last T time.
+- `keep_within`: keep records created within the last T time.
 
 These are knobs on root collection; the mark algorithm itself doesn't
-change. Keep-policies are not automatically transitive — a stone kept by
+change. Keep-policies are not automatically transitive — a record kept by
 `keep_top_n` does not necessarily keep its children alive. If you want
 historical subtree integrity, pair keep-policies with L0-prune-only
 (Appendix A) so structure survives even when bytes are released.
 
 **Concurrent runs.** A GC lock (`.cairn/gc.lock`) is taken for mark +
-sweep. Runs attempting to publish stones wait for the lock; GC backs off
+sweep. Runs attempting to publish records wait for the lock; GC backs off
 if a run is actively writing. Standard Nix-style.
 
-**Sweep phase.** Anything in `store/`, `cairns/*/{stone_uuid}/`, or
+**Sweep phase.** Anything in `store/`, `cairns/*/{record_uuid}/`, or
 `runs/` not in the live set is deleted. Empty `cairns/{cairn_id}/` dirs
 can be swept too. Dangling `checkouts/auto/` entries were already
 removed during root collection.
@@ -428,19 +428,19 @@ over ground truth. Ground truth stays the filesystem.
   record. The cache is a view over history, not a slot.
 - **Cache-hit subtree expansion works.** Clicking a recalled node in the
   TUI expands the full recorded subtree, with accurate timings and
-  traces, sourced from the referenced stone's `children/*` chain.
+  traces, sourced from the referenced record's `children/*` chain.
 - **Surgery is one primitive.** Override, mock, branch, pin are all
-  "carry a stone." No special cases in the engine.
+  "carry a record." No special cases in the engine.
 - **Whole-graph identity before execution.** Structural arg-hashing
   makes every cairn_id statically derivable from the call expression, so
   scheduling decisions (cache hit/miss classification, parallelism
   plans) can happen before any body runs.
 - **Single-file tailing.** The run's merged trace is live-written for
   TUI tails and observability ingestion.
-- **Honest identity.** cairn_id identifies the question; stone_id
+- **Honest identity.** cairn_id identifies the question; record_id
   identifies an execution; seq is run-local. Three layers, each scoped
   to its meaning.
-- **Progressive disclosure.** A parent stone renders without opening
+- **Progressive disclosure.** A parent record renders without opening
   children; expanding a child is one file open.
 - **`ls` is debugging.** Every dep is a symlink. `find -L .cairn -lname
   '*abc123*'` enumerates every reference to a content_hash. No JSON
@@ -453,12 +453,12 @@ over ground truth. Ground truth stays the filesystem.
 ## Appendix A — L0: content-addressed byte storage
 
 L0 is orthogonal to the cairn idea: it's where value bytes live,
-referenced weakly from stones. Dropping L0 never corrupts the cairn
+referenced weakly from records. Dropping L0 never corrupts the cairn
 structure; at worst a trace renders `(pruned, was: DataFrame(1234 rows,
 8 cols))` from the `result_repr` instead of opening the file.
 
 **Layout.** One file per content hash under `store/{content_hash}`.
-Stones reference it via `result → ../../../store/{hash}` and optionally
+Records reference it via `result → ../../../store/{hash}` and optionally
 `args/* → …/store/{hash}`.
 
 **Per-type serialization.** The type of a value decides how its bytes
@@ -499,12 +499,12 @@ bytes).
 
 ### L0 GC and pruning
 
-L0 entries live or die by stone references. The mark phase (main body)
+L0 entries live or die by record references. The mark phase (main body)
 follows `result`, `args/*`, and any `trace(store=…)` references;
 anything in `store/` not reached is swept.
 
 **Pruning-only mode.** `cairn gc --prune-l0` removes L0 entries
-regardless of stone liveness, keeping stone metadata and events.
+regardless of record liveness, keeping record metadata and events.
 Enables "keep the run's structure and timing, drop the big bytes"
 workflows. Traces degrade gracefully via `*_repr` fields.
 
@@ -512,32 +512,32 @@ workflows. Traces degrade gracefully via `*_repr` fields.
 
 ## Appendix B — Cache pick policy
 
-The resolver's recall branch calls `pick(cairn.stack) → stone | None`.
-This is where "which stone do we actually use on a cache hit?" lives.
+The resolver's recall branch calls `pick(cairn.stack) → record | None`.
+This is where "which record do we actually use on a cache hit?" lives.
 
-**Default: top valid stone matching the current version.**
+**Default: top valid record matching the current version.**
 
-- **Matching version.** The stack may hold stones from any past code
-  revision. Only stones whose `version` matches the current code's
-  version are eligible. A mismatched stack — all stones at older
+- **Matching version.** The stack may hold records from any past code
+  revision. Only records whose `version` matches the current code's
+  version are eligible. A mismatched stack — all records at older
   versions — is treated as a miss; execution proceeds and pushes a new
-  stone at the current version.
-- **Subtree integrity.** The picked stone must have all its `children/*`
-  still resolving. A stone whose descendants were GC'd is skipped.
-- **Top.** Among eligible stones, pick the newest. uuid7 sorts
+  record at the current version.
+- **Subtree integrity.** The picked record must have all its `children/*`
+  still resolving. A record whose descendants were GC'd is skipped.
+- **Top.** Among eligible records, pick the newest. uuid7 sorts
   chronologically by filename, so the newest is just `ls | tail -1`
   filtered by the predicate.
 
-**Optional index.** Per-cairn `version -> stone_uuid` symlinks can
+**Optional index.** Per-cairn `version -> record_uuid` symlinks can
 short-circuit the scan when the stack is long. These are mutable
 pointers, rebuilt from the stack on demand — index, not ground truth.
 Stale pointers are recovered by falling back to a scan.
 
-**Invalidation.** There is no in-place rejection of stones. Two
+**Invalidation.** There is no in-place rejection of records. Two
 mechanisms cover every real need:
 
 - **Bump the version** (hand-rolled or automatic via ast_hash). Past
-  stones remain in the stack as history but no longer match the recall
+  records remain in the stack as history but no longer match the recall
   predicate. The cairn's stack grows a new version segment; old
   segments stay for drift analysis until GC'd.
 - **`--force` carry-miss flag** on a single run. The resolver treats
@@ -545,12 +545,12 @@ mechanisms cover every real need:
   regardless of what's there. The carry map records this so the run is
   reproducible.
 
-Stones are genuinely immutable. Cache semantics shift by changing the
+Records are genuinely immutable. Cache semantics shift by changing the
 predicate, never by mutating what was recorded.
 
 **Pluggable pickers.** Advanced users can supply a custom
-`pick_stone(stack, context) → stone | None` — e.g., "only stones from
-tagged runs," "only stones newer than T," "prefer a tag, fall back to
+`pick_record(stack, context) → record | None` — e.g., "only records from
+tagged runs," "only records newer than T," "prefer a tag, fall back to
 any."
 
 ### Cairn-level aggregation
@@ -560,13 +560,13 @@ computation lands in the same directory, so stats over that directory
 describe the computation over time.
 
 A `digest.json` at the cairn root (optional, rebuildable by scanning the
-stack) holds rolling summaries: stone counts by version, duration
+stack) holds rolling summaries: record counts by version, duration
 distributions, result-hash frequencies, ast_hash distribution. Useful for:
 
 - Capacity planning and regression detection (duration trends).
 - Nondeterminism detection: same cairn, same version, different result
   hashes → something is impure.
-- Drift tracking: ast_hash distribution across stones shows code
+- Drift tracking: ast_hash distribution across records shows code
   evolution over time for this specific computation.
 
 `cairn stats <cairn_id>` surfaces a single cairn's digest; unscoped
@@ -585,9 +585,9 @@ the stack, not ground truth.
 - **Alias table.** `aliases.json` at the store root implements kripkean
   renames from the nominal-identity doc. Maps retired names → stable
   UUIDs. Mandatory once nominal is the default cache key.
-- **Stone_id scheme.** uuid7 is the default — time-ordered filenames
+- **Record_id scheme.** uuid7 is the default — time-ordered filenames
   give chronological `ls` for free and avoid a separate creation-order
-  index. Content-hash of the stone's canonicalized contents is possible
+  index. Content-hash of the record's canonicalized contents is possible
   but needs a careful definition of "canonical" (timings excluded).
   Revisit if cross-run dedup of identical executions becomes desirable.
 - **Checkout materialization flags.** Default is symlink; `--copy` and
@@ -598,19 +598,19 @@ the stack, not ground truth.
 - **Run replay is trivial** under this model: read the run's merged
   trace verbatim. No cache consultation needed — resolution was frozen
   into the trace at record time. Replays are stable under later cache
-  mutation or stone GC, provided the referenced stones survive (kept
+  mutation or record GC, provided the referenced records survive (kept
   alive by the run dir's symlinks, so this is automatic).
 - **`cached_output()` / `cached_tracing()`** become lookups into a
-  resolved stone regardless of how it was resolved (created, recalled,
-  carried). The handle knows its stone; the stone is addressable.
+  resolved record regardless of how it was resolved (created, recalled,
+  carried). The handle knows its record; the record is addressable.
   Previous awkwardness around memo=False disappears.
-- **OTEL export** is a natural sink: each stone becomes a span, a run's
+- **OTEL export** is a natural sink: each record becomes a span, a run's
   walk becomes one trace. Cairns provide structure OTEL consumers can
   collapse if they only care about the trace view; the cairn-identity
   information is additive.
 - **Scale.** Filesystem is ground truth; at scale the same logical
   model materializes into a sqlite index at `.cairn/index/`. Inode
-  pressure from per-stone dirs and symlinks is addressed at the index
+  pressure from per-record dirs and symlinks is addressed at the index
   layer, not by changing the model.
 - **Windows.** Not supported. Symlinks to files are the wart (junctions
   only cover directories), and the model leans on them. Linux and

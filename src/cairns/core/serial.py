@@ -1,16 +1,22 @@
 """Result serialization for the CAS.
 
 Values flow between memory and disk as JSON. Types that don't round-trip
-through plain JSON (Pydantic models, tuples, …) register a `Serializer` that
-turns them into a JSON-safe form on write and reconstructs them on read.
+through plain JSON (Pydantic models, tuples, …) declare a `Serializer`
+that turns them into a JSON-safe form on write and reconstructs them on
+read.
 
 On disk, a tagged value looks like::
 
     {"__cairn_serial__": "mymod.Analysis", "v": {"sentiment": "positive", ...}}
 
-The tag is the value's fully-qualified type; on read we import the class and
-walk the MRO to find a registered deserializer. Untagged values (plain
-JSON-native types) pass through unchanged, so old stones keep working.
+The tag is the value's fully-qualified type; on read we import the class
+and walk the MRO via the active runtime's serializers. Untagged values
+(plain JSON-native types) pass through unchanged, so old records keep
+working.
+
+Serializers live on `Runtime` instances. The active Run's runtime
+is consulted; falls back to `default_runtime` when no Run is active.
+Use `runtime.register_serializer(...)` to extend.
 """
 
 from __future__ import annotations
@@ -31,28 +37,15 @@ class Serializer(Protocol):
     def from_jsonable(self, form: Any, cls: type) -> Any: ...
 
 
-# type → Serializer. MRO-matched at write time (top-level type of each node)
-# and at read time (class resolved from tag).
-_serializers: dict[type, Serializer] = {}
-
-
-def register_serializer(tp: type, serializer: Serializer) -> None:
-    """Register a Serializer for a type. Subclasses match via MRO."""
-    _serializers[tp] = serializer
-
-
-def clear_serializers() -> None:
-    """Clear all registered serializers and reinstall defaults."""
-    _serializers.clear()
-    _install_defaults()
-
-
 # ── walk ──
 
 
 def _find(tp: type) -> Serializer | None:
+    from .runtime import active_serializers  # noqa: PLC0415
+
+    serializers = active_serializers()
     for base in tp.__mro__:
-        s = _serializers.get(base)
+        s = serializers.get(base)
         if s is not None:
             return s
     return None
@@ -122,7 +115,7 @@ def from_jsonable(form: Any) -> Any:
             if ser is None:
                 raise TypeError(
                     f"No serializer registered for {tag!r}. "
-                    f"Call register_serializer({cls.__name__}, ...) before loading."
+                    f"Call `runtime.register_serializer({cls.__name__}, ...)` before loading."
                 )
             return ser.from_jsonable(mapping[_VALUE_KEY], cls)
         return {k: from_jsonable(v) for k, v in mapping.items()}
@@ -142,12 +135,10 @@ class _PydanticSerializer:
         return cls.model_validate(form)  # type: ignore[attr-defined]
 
 
-def _install_defaults() -> None:
+def install_defaults(runtime: Any) -> None:
+    """Install Pydantic serializer on `runtime` (no-op if pydantic unavailable)."""
     try:
-        from pydantic import BaseModel
+        from pydantic import BaseModel  # noqa: PLC0415
     except ImportError:
         return
-    _serializers[BaseModel] = _PydanticSerializer()
-
-
-_install_defaults()
+    runtime.serializers[BaseModel] = _PydanticSerializer()

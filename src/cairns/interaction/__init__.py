@@ -1,113 +1,43 @@
-"""Cairn interaction: typed human-in-the-loop primitives + sink protocol.
+"""Cairn interaction: typed human-in-the-loop primitives.
 
-Design:
+The `InteractionSink` protocol lives in `cairns.core.runtime` (it's a
+slot on the active `Run`). This module provides:
 
-- Out-of-band channel. `InteractionSink` has typed methods — one per
-  widget kind. Nothing flows through the core event log; the span that
-  awaits simply stays `running` until the sink returns. Whether a widget
-  renders next to the span tree is a sink implementation detail.
-
-- Typed API. One async wrapper per widget kind, strongly typed at the
-  call site. No `schema=` kwarg, no metadata dicts, no stringly-typed
-  dispatch.
-
-- Replay. Each wrapper is backed by a memoized `@step`, so answers are
-  content-addressed in the output store. Edit the prompt, a choice
-  option, or a default, and only that ask re-runs — every other cached
-  answer hits.
+- typed async wrappers (`await_input`, `await_choice`, `await_confirm`)
+  each backed by a memoized `@step`, so answers are content-addressed.
+- built-in sinks: `QueueInteractionSink` (tests / scripted runs) and
+  `StdinInteractionSink` (terminal fallback).
 
 Usage:
 
-    from cairn.interaction import (
-        await_input, await_choice, await_confirm, set_interaction_sink,
-        StdinInteractionSink,
-    )
+    from cairns import run
+    from cairns.interaction import await_input, StdinInteractionSink
 
-    set_interaction_sink(StdinInteractionSink())
+    @step
+    async def main():
+        name = await await_input("What's your name?")
+        ...
 
-    name = await await_input("What's your name?")
-    pick = await await_choice("Better?", {"A": text_a, "B": text_b})
-    go   = await await_confirm("Proceed?", default=True)
+    run(main, interaction_sink=StdinInteractionSink())
 """
 
 from __future__ import annotations
 
 import asyncio
-from contextvars import ContextVar, Token
-from typing import Any, Mapping, Protocol, TypeVar, cast
+from typing import Any, Mapping, TypeVar, cast
 
-from cairn.core import step
-from cairn.core.context import current_span
+from cairns.core import step
+from cairns.core.runtime import InteractionSink, current_run, current_span
 
 K = TypeVar("K")
 
 
-# ── Protocol ──
-
-
-class InteractionSink(Protocol):
-    """Transport for routing interaction requests to a human (or stand-in).
-
-    `anchor_span` is the span on whose behalf the request is being made —
-    the caller of the `await_*` wrapper, not the internal `@step` that
-    wraps the sink call. Sinks that render widgets next to the span tree
-    (the TUI) use it to attach the widget correctly; headless sinks
-    (stdin, queue) ignore it.
-    """
-
-    async def request_input(
-        self,
-        prompt: str,
-        *,
-        anchor_span: int | None,
-        default: str | None = None,
-        placeholder: str | None = None,
-    ) -> str: ...
-
-    async def request_choice(
-        self,
-        prompt: str,
-        options: Mapping[K, str],
-        *,
-        anchor_span: int | None,
-        default: K | None = None,
-    ) -> K: ...
-
-    async def request_confirm(
-        self,
-        prompt: str,
-        *,
-        anchor_span: int | None,
-        default: bool | None = None,
-    ) -> bool: ...
-
-
-# ── Contextvar plumbing ──
-
-
-_interaction_sink: ContextVar[InteractionSink | None] = ContextVar(
-    "_interaction_sink", default=None
-)
-
-
-def get_interaction_sink() -> InteractionSink | None:
-    return _interaction_sink.get()
-
-
-def set_interaction_sink(sink: InteractionSink) -> Token[InteractionSink | None]:
-    return _interaction_sink.set(sink)
-
-
-def reset_interaction_sink(token: Token[InteractionSink | None]) -> None:
-    _interaction_sink.reset(token)
-
-
 def _require_sink() -> InteractionSink:
-    sink = _interaction_sink.get()
+    sink = current_run().interaction_sink
     if sink is None:
         raise RuntimeError(
-            "no interaction sink registered — call set_interaction_sink(...) "
-            "or pass interaction_sink=... to run()."
+            "no interaction sink registered — pass `interaction_sink=...` to "
+            "`run(...)` or construct `Run(interaction_sink=...)` directly."
         )
     return sink
 
@@ -117,7 +47,7 @@ def _caller_span() -> int | None:
     # step itself; its parent is the user code that called the wrapper.
     # Widgets belong next to the conversation, not the caching wrapper.
     s = current_span.get()
-    return s.parent_id if s is not None else None
+    return s.parent_seq if s is not None else None
 
 
 # ── Memoized internals (one @step per widget) ──
@@ -315,9 +245,6 @@ __all__ = [
     "await_input",
     "await_choice",
     "await_confirm",
-    "get_interaction_sink",
-    "set_interaction_sink",
-    "reset_interaction_sink",
     "QueueInteractionSink",
     "StdinInteractionSink",
 ]

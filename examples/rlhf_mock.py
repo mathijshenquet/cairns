@@ -32,8 +32,8 @@ import asyncio
 import hashlib
 import random
 
-from cairn import rate_limited, run, step, trace
-from cairn.interaction import await_choice
+from cairns import rate_limited, run, step, trace
+from cairns.interaction import await_choice
 
 
 # ── Dataset + mock generation ──
@@ -248,11 +248,10 @@ main = rlhf_pipeline
 
 
 if __name__ == "__main__":
-    from cairn.interaction import StdinInteractionSink, set_interaction_sink
+    from cairns.interaction import StdinInteractionSink
 
-    set_interaction_sink(StdinInteractionSink())
     print(f"Mock RLHF over {len(PROMPTS)} prompts — expect {len(PROMPTS)} A/B questions.\n")
-    out = run(rlhf_pipeline, store_path=".cairn")
+    out = run(rlhf_pipeline, store_path=".cairn", interaction_sink=StdinInteractionSink())
 
     print("\n─── Results ───")
     print(f"  final checkpoint : {out['checkpoint']}")

@@ -169,7 +169,7 @@ class StepInfo:
     `name` answers "what function is this?" (module:qualname by default, stable
     across edits). `version` answers "which implementation?" — a sha256 digest
     over source + resolved refs. `cairn_id(args)` combines name+args to address
-    the cairn stack; version is stored per-stone and filtered at recall time.
+    the cairn stack; version is stored per-record and filtered at recall time.
     """
 
     name: str
@@ -233,11 +233,11 @@ Origin = Literal["recalled", "carried"]
 
 
 @dataclass
-class CacheEntry:
+class Record:
     """Stored result of a step invocation.
 
     `origin` is how the *resolver* reached this entry, not a property of the
-    stone itself. The default is "recalled" (picked from the cairn stack);
+    record itself. The default is "recalled" (picked from the cairn stack);
     `OverlayStore` marks its hits as "carried" so the step wrapper knows to
     short-circuit regardless of memo.
     """
@@ -248,11 +248,12 @@ class CacheEntry:
     duration: float = 0.0
     own_duration: float = 0.0
     cairn_id: str | None = None
-    stone_id: str | None = None
-    stone_path: str | None = None
+    record_id: str | None = None
+    record_path: str | None = None
     result_hash: str | None = None
     child_refs: list[dict[str, str]] = field(default_factory=lambda: [])
     origin: Origin = "recalled"
+    tags: dict[str, str] = field(default_factory=lambda: {})
 
 
 @dataclass(frozen=True)
@@ -282,8 +283,8 @@ class SpanMetrics:
 class TaskSpan:
     """Runtime state for a single step invocation."""
 
-    id: int
-    parent_id: int | None
+    seq: int
+    parent_seq: int | None
     name: str
     info: StepInfo
 
@@ -297,8 +298,8 @@ class TaskSpan:
     end_ts: float = field(default=0.0)
     cached: bool = field(default=False)
     cairn_id: str | None = field(default=None)
-    stone_id: str | None = field(default=None)
-    stone_path: str | None = field(default=None)
+    record_id: str | None = field(default=None)
+    record_path: str | None = field(default=None)
     child_spans: list[TaskSpan] = field(default_factory=lambda: [])
 
     # Own-time tracking: wall time minus time spent awaiting child Handles.

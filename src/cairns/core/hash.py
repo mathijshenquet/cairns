@@ -1,4 +1,19 @@
-"""Hashing utilities for cache key computation."""
+"""Hashing utilities for cache key computation.
+
+Hashers live on `Runtime` instances (see `cairns.core.runtime`). The
+default hashers (Path, functools.partial, Pydantic) are installed by
+`Runtime.__init__`. For per-Runtime customization use
+`runtime.register_hasher(...)`; for tests use `Harness(hash_funcs=...)`.
+
+`resolve_hashable` defaults to the active Run's runtime hashers, falling
+back to `default_runtime` when no Run is active (e.g. body fingerprinting
+at `@step` decoration time). Pass `hash_funcs=` explicitly to override
+for one call.
+
+Limitation: registered hashers (`_hash_partial`) that recursively call
+`resolve_hashable` will themselves see the active runtime's funcs (via
+the same default-lookup), so transitive overrides do flow through.
+"""
 
 from __future__ import annotations
 
@@ -8,29 +23,17 @@ import json
 from pathlib import Path
 from typing import Any, Callable, cast
 
-# Type registry consulted via MRO walk, so a PosixPath registration hits the
-# Path hasher without explicit subclass entries.
-_hash_funcs: dict[type, Callable[[Any], Any]] = {}
 
-
-def register_hash_func(tp: type, func: Callable[[Any], Any]) -> None:
-    """Register a custom hash function for a type."""
-    _hash_funcs[tp] = func
-
-
-def set_hash_funcs(funcs: dict[type, Callable[[Any], Any]]) -> None:
-    """Bulk-register hash functions."""
-    _hash_funcs.update(funcs)
-
-
-def clear_hash_funcs() -> None:
-    """Clear all registered hash functions and reinstall defaults."""
-    _hash_funcs.clear()
-    _install_defaults()
-
-
-def resolve_hashable(value: Any, _seen: dict[int, bool] | None = None) -> Any:
+def resolve_hashable(
+    value: Any,
+    _seen: dict[int, bool] | None = None,
+    hash_funcs: dict[type, Callable[[Any], Any]] | None = None,
+) -> Any:
     """Turn any value into a canonical tree of primitives for hashing.
+
+    `hash_funcs`, if provided, fully replaces the active runtime's
+    hashers for this call (and its recursion). Otherwise the active
+    Run's runtime is consulted, falling back to `default_runtime`.
 
     Returns a JSON-serializable structure. Unknown types raise TypeError
     (fail-loud — no silent repr truncation of numpy/pandas/torch objects).
@@ -55,7 +58,7 @@ def resolve_hashable(value: Any, _seen: dict[int, bool] | None = None) -> Any:
         try:
             return {
                 "__dict__": {
-                    str(k): resolve_hashable(d[k], _seen)
+                    str(k): resolve_hashable(d[k], _seen, hash_funcs)
                     for k in sorted(d, key=lambda x: str(x))
                 }
             }
@@ -67,7 +70,7 @@ def resolve_hashable(value: Any, _seen: dict[int, bool] | None = None) -> Any:
         tag = "__list__" if isinstance(value, list) else "__tuple__"
         _seen[vid] = True
         try:
-            return {tag: [resolve_hashable(v, _seen) for v in seq]}
+            return {tag: [resolve_hashable(v, _seen, hash_funcs) for v in seq]}
         finally:
             del _seen[vid]
 
@@ -77,19 +80,26 @@ def resolve_hashable(value: Any, _seen: dict[int, bool] | None = None) -> Any:
         fs = cast(set[Any] | frozenset[Any], value)
         _seen[vid] = True
         try:
-            items = [resolve_hashable(v, _seen) for v in fs]
+            items = [resolve_hashable(v, _seen, hash_funcs) for v in fs]
             items.sort(key=lambda x: json.dumps(x, sort_keys=True))
             return {tag: items}
         finally:
             del _seen[vid]
 
+    if hash_funcs is None:
+        from .runtime import active_hash_funcs  # noqa: PLC0415
+
+        funcs = active_hash_funcs()
+    else:
+        funcs = hash_funcs
+
     for tp in type(value).__mro__:
-        if tp in _hash_funcs:
-            return _hash_funcs[tp](value)
+        if tp in funcs:
+            return funcs[tp](value)
 
     raise TypeError(
         f"Unhashable type for cache key: {type(value).__name__}. "
-        f"Register a hash function via register_hash_func(...)"
+        f"Register a hasher via `runtime.register_hasher(...)`."
     )
 
 
@@ -107,6 +117,10 @@ def compute_cairn_id(identity: str, resolved_args: dict[str, Any]) -> str:
 
 
 # ── Default type hashers ──
+#
+# These are installed onto `Runtime.hash_funcs` by `_install_defaults`
+# in runtime.py. They're public-ish (exported as private-by-convention)
+# so subclassing or extending Runtimes can reuse them.
 
 
 def _hash_path(p: Path) -> Any:
@@ -153,16 +167,12 @@ def _hash_pydantic(model: Any) -> Any:
     }
 
 
-def _install_defaults() -> None:
-    _hash_funcs[Path] = _hash_path
-    _hash_funcs[functools.partial] = _hash_partial
-    # Optional integrations — silently skipped if the package isn't installed.
+def install_defaults(runtime: Any) -> None:
+    """Install Path / functools.partial / Pydantic hashers on `runtime`."""
+    runtime.hash_funcs[Path] = _hash_path
+    runtime.hash_funcs[functools.partial] = _hash_partial
     try:
-        from pydantic import BaseModel
+        from pydantic import BaseModel  # noqa: PLC0415
     except ImportError:
-        pass
-    else:
-        _hash_funcs[BaseModel] = _hash_pydantic
-
-
-_install_defaults()
+        return
+    runtime.hash_funcs[BaseModel] = _hash_pydantic

@@ -2,7 +2,7 @@
 Core behavior tests for Cairn.
 
 These tests define expected behavior and serve as the TDD spec.
-They use a test Runtime that provides an in-memory store and trace sink.
+They use a test Harness that provides an in-memory store and trace sink.
 """
 
 from __future__ import annotations
@@ -10,8 +10,8 @@ from __future__ import annotations
 import asyncio
 import pytest
 
-from cairn import step, trace, cached_output, cached_tracing, Handle
-from cairn.core.testing import Runtime
+from cairns import step, trace, cached_output, cached_tracing, Handle
+from cairns.testing import Harness
 
 
 
@@ -26,7 +26,7 @@ async def test_step_returns_handle():
     async def add(a: int, b: int) -> int:
         return a + b
 
-    async with Runtime() as rt:
+    async with Harness() as rt:
         h = add(1, 2)
         assert isinstance(h, Handle)
         assert await h == 3
@@ -43,7 +43,7 @@ async def test_memo_caches_on_same_args():
         call_count += 1
         return a + b
 
-    async with Runtime() as rt:
+    async with Harness() as rt:
         assert await add(1, 2) == 3
         assert call_count == 1
 
@@ -62,7 +62,7 @@ async def test_memo_misses_on_different_args():
         call_count += 1
         return a + b
 
-    async with Runtime() as rt:
+    async with Harness() as rt:
         assert await add(1, 2) == 3
         assert await add(2, 3) == 5
         assert call_count == 2
@@ -79,7 +79,7 @@ async def test_default_no_memo():
         call_count += 1
         return f"hello {name}"
 
-    async with Runtime() as rt:
+    async with Harness() as rt:
         assert await greet("world") == "hello world"
         assert await greet("world") == "hello world"
         assert call_count == 2
@@ -100,7 +100,7 @@ async def test_handle_as_argument():
     async def add_one(x: int) -> int:
         return x + 1
 
-    async with Runtime() as rt:
+    async with Harness() as rt:
         h = double(5)             # Handle[int]
         result = await add_one(h)  # framework awaits h, passes 10
         assert result == 11
@@ -122,7 +122,7 @@ async def test_chained_handles():
     async def step_c(x: int) -> int:
         return x - 3
 
-    async with Runtime() as rt:
+    async with Harness() as rt:
         result = await step_c(step_b(step_a(10)))
         assert result == 19  # (10+1)*2 - 3
 
@@ -142,7 +142,7 @@ async def test_fanout():
         execution_order.append(f"end-{x}")
         return x * 2
 
-    async with Runtime() as rt:
+    async with Harness() as rt:
         handles = [slow(i) for i in range(3)]
         results = [await h for h in handles]
         assert results == [0, 2, 4]
@@ -165,7 +165,7 @@ async def test_fanout_with_dependentstep():
     async def sum_two(a: int, b: int) -> int:
         return a + b
 
-    async with Runtime() as rt:
+    async with Harness() as rt:
         h1 = double(3)
         h2 = double(4)
         result = await sum_two(h1, h2)
@@ -185,7 +185,7 @@ async def test_trace_emits_event():
         trace("halfway", progress=(1, 2))
         return "done"
 
-    async with Runtime() as rt:
+    async with Harness() as rt:
         await work()
         trace_events = rt.trace.events(kind="trace")
         assert len(trace_events) == 2
@@ -209,13 +209,13 @@ async def test_trace_has_correct_parent():
         trace("in inner")
         return "done"
 
-    async with Runtime() as rt:
+    async with Harness() as rt:
         await outer()
         traces = rt.trace.events(kind="trace")
         outer_span = rt.trace.span("outer")
         inner_span = rt.trace.span("inner")
-        assert traces[0].parent_id == outer_span.id
-        assert traces[1].parent_id == inner_span.id
+        assert traces[0].parent_seq == outer_span.seq
+        assert traces[1].parent_seq == inner_span.seq
 
 
 # ── Event log structure ──
@@ -234,7 +234,7 @@ async def test_spawn_and_wait_events():
         h = child()
         return await h
 
-    async with Runtime() as rt:
+    async with Harness() as rt:
         await parent()
         spawns = rt.trace.events(kind="spawn")
         waits = rt.trace.events(kind="wait")
@@ -246,9 +246,9 @@ async def test_spawn_and_wait_events():
         child_span = rt.trace.span("child")
         span_waits = [
             w for w in waits
-            if w.id == parent_span.id
+            if w.seq == parent_span.seq
             and w.kwargs.get("on", {}).get("kind") == "span"
-            and w.kwargs.get("on", {}).get("id") == child_span.id
+            and w.kwargs.get("on", {}).get("seq") == child_span.seq
         ]
         assert len(span_waits) == 1
 
@@ -266,14 +266,14 @@ async def test_fanout_detected_in_trace():
         handles = [leaf(i) for i in range(5)]
         return [await h for h in handles]
 
-    async with Runtime() as rt:
+    async with Harness() as rt:
         await root()
         root_span = rt.trace.span("root")
-        child_spawns = rt.trace.child_events(root_span.id, kind="spawn")
+        child_spawns = rt.trace.child_events(root_span.seq, kind="spawn")
         # `wait` events fire on the awaiter (root), one per child await.
         root_waits = [
             w for w in rt.trace.events(kind="wait")
-            if w.id == root_span.id
+            if w.seq == root_span.seq
             and w.kwargs.get("on", {}).get("kind") == "span"
         ]
 
@@ -297,7 +297,7 @@ async def test_cached_output_available_in_memo_false():
             return prev + 100  # modify to prove we got it
         return x * 2
 
-    async with Runtime() as rt:
+    async with Harness() as rt:
         assert await compute(5) == 10       # first: no cache, returns 5*2
         assert await compute(5) == 110      # second: cached_output() returns 10, adds 100
 
@@ -317,7 +317,7 @@ async def test_cached_tracing_replays_traces():
         trace("almost done")
         return x * 2
 
-    async with Runtime() as rt:
+    async with Harness() as rt:
         assert await work(5) == 10
 
         # Second call — should replay traces
@@ -340,7 +340,7 @@ async def test_error_propagates_through_handle():
     async def fail() -> str:
         raise ValueError("boom")
 
-    async with Runtime() as rt:
+    async with Harness() as rt:
         h = fail()
         with pytest.raises(ValueError, match="boom"):
             await h
@@ -359,7 +359,7 @@ async def test_error_cached_but_retried():
             raise ValueError("first call fails")
         return "success"
 
-    async with Runtime() as rt:
+    async with Harness() as rt:
         h = flaky()
         with pytest.raises(ValueError):
             await h
@@ -383,7 +383,7 @@ async def test_error_in_child_propagates_to_parent():
         h = bad_child()
         return await h
 
-    async with Runtime() as rt:
+    async with Harness() as rt:
         with pytest.raises(RuntimeError, match="child failed"):
             await parent()
 
@@ -408,7 +408,7 @@ async def test_parent_waits_for_unawaited_children():
         slow_child()  # spawned but not awaited
         return "done"
 
-    async with Runtime() as rt:
+    async with Harness() as rt:
         result = await parent()
         assert result == "done"
         assert child_completed  # parent waited for child via task group
@@ -429,7 +429,7 @@ async def test_custom_identity():
     async def foo() -> str:
         return "bar"
 
-    async with Runtime() as rt:
+    async with Harness() as rt:
         await foo()
         span = rt.trace.span("foo")
         assert span.identity == "my_custom_id"
@@ -446,7 +446,7 @@ async def test_version_change_invalidates_cache():
         call_count += 1
         return x * 2
 
-    async with Runtime() as rt:
+    async with Harness() as rt:
         assert await compute(5) == 10
         assert call_count == 1
 
@@ -478,7 +478,7 @@ async def test_edge_annotation():
         await step_b()
         return "done"
 
-    async with Runtime() as rt:
+    async with Harness() as rt:
         await parent()
         edges = rt.trace.edge_annotations("parent")
         assert len(edges) == 1
@@ -496,7 +496,7 @@ async def test_custom_hash_func():
 
     call_count = 0
 
-    async with Runtime(hash_funcs={Path: lambda p: str(p)}) as rt:
+    async with Harness(hash_funcs={Path: lambda p: str(p)}) as rt:
 
         @step(memo=True)
         async def read_file(path: Path) -> str:
@@ -518,7 +518,7 @@ async def test_custom_hash_func():
 @pytest.mark.asyncio
 async def test_replayable_wrapper():
     """replayable() replays from cache with trace events when available."""
-    from cairn import replayable
+    from cairns import replayable
 
     call_count = 0
 
@@ -531,7 +531,7 @@ async def test_replayable_wrapper():
 
     compute = replayable(compute_impl)
 
-    async with Runtime() as rt:
+    async with Harness() as rt:
         # First call: runs the real function
         assert await compute(5) == 10
         assert call_count == 1
@@ -549,7 +549,7 @@ async def test_replayable_wrapper():
 @pytest.mark.asyncio
 async def test_rate_limited_wrapper():
     """rate_limited() constrains concurrent execution."""
-    from cairn import rate_limited
+    from cairns import rate_limited
 
     max_concurrent = 0
     current_concurrent = 0
@@ -563,7 +563,7 @@ async def test_rate_limited_wrapper():
         current_concurrent -= 1
         return x
 
-    async with Runtime() as rt:
+    async with Harness() as rt:
         handles = [limited(i) for i in range(10)]
         results = [await h for h in handles]
         assert results == list(range(10))
@@ -608,7 +608,7 @@ async def test_research_pipeline():
         handles = {a: research_validated(a) for a in animals}
         return {a: await h for a, h in handles.items()}
 
-    async with Runtime() as rt:
+    async with Harness() as rt:
         results = await pipeline()
         assert len(results) == 3
         assert all("detailed" in r for r in results.values())

@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 
-from cairn import step, run, trace
+from cairns import step, run, trace
 
 
 @step(memo=True)  # cache fetched pages — the expensive leaf

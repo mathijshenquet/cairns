@@ -6,7 +6,7 @@ from typing import Any
 
 from rich.text import Text
 
-from cairn.run.show import TRACE_RESERVED, format_cost
+from cairns.run.show import TRACE_RESERVED, format_cost
 
 
 def trace_style(level: str) -> str:

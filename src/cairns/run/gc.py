@@ -12,7 +12,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from cairn.core.lock import gc_exclusive as _gc_exclusive
+from cairns.core.lock import gc_exclusive as _gc_exclusive
 
 
 _RUN_ID_RE = re.compile(r"^(?P<entry>.+)-(?P<ts>\d{4}-\d{2}-\d{2}T[\d:.]+)$")
@@ -64,28 +64,28 @@ def _get_gc_roots(runs_dir: str) -> set[str]:
     return roots
 
 
-def _mark_stone(stone: str, live_stones: set[str], live_outputs: set[str]) -> None:
-    stone = os.path.realpath(stone)
-    if stone in live_stones or not os.path.isdir(stone):
+def _mark_record(record: str, live_records: set[str], live_outputs: set[str]) -> None:
+    record = os.path.realpath(record)
+    if record in live_records or not os.path.isdir(record):
         return
-    live_stones.add(stone)
-    result = os.path.join(stone, "result")
+    live_records.add(record)
+    result = os.path.join(record, "result")
     if os.path.exists(result):
         live_outputs.add(os.path.basename(os.path.realpath(result)))
-    children = os.path.join(stone, "children")
+    children = os.path.join(record, "children")
     if os.path.isdir(children):
         for entry in os.scandir(children):
             if entry.is_symlink():
-                _mark_stone(entry.path, live_stones, live_outputs)
+                _mark_record(entry.path, live_records, live_outputs)
 
 
 def _live_from_runs(store_path: str) -> tuple[set[str], set[str]]:
-    """Return live stone dirs and store filenames reachable from run steps."""
-    live_stones: set[str] = set()
+    """Return live record dirs and store filenames reachable from run steps."""
+    live_records: set[str] = set()
     live_outputs: set[str] = set()
     runs_dir = os.path.join(store_path, "runs")
     if not os.path.isdir(runs_dir):
-        return live_stones, live_outputs
+        return live_records, live_outputs
     for run in os.scandir(runs_dir):
         if not run.is_dir(follow_symlinks=False) or _parse_run_id(run.name) is None:
             continue
@@ -94,8 +94,8 @@ def _live_from_runs(store_path: str) -> tuple[set[str], set[str]]:
             continue
         for step in os.scandir(steps):
             if step.is_symlink():
-                _mark_stone(step.path, live_stones, live_outputs)
-    return live_stones, live_outputs
+                _mark_record(step.path, live_records, live_outputs)
+    return live_records, live_outputs
 
 
 def list_runs(store_path: str) -> list[RunInfo]:
@@ -177,8 +177,8 @@ _TMP_STALE_SECONDS = 15 * 60
 def _sweep_abandoned_tmp(cairn_dir: str, *, max_age: float = _TMP_STALE_SECONDS) -> None:
     """Remove .tmp-{id} dirs older than `max_age` seconds.
 
-    A crash between `makedirs(.tmp-…)` and `os.replace(..., stone_id)` leaves a
-    partial stone the reader is designed to ignore (missing metadata.json). This
+    A crash between `makedirs(.tmp-…)` and `os.replace(..., record_id)` leaves a
+    partial record the reader is designed to ignore (missing metadata.json). This
     janitor cleans them up so they don't accumulate forever.
     """
     now = time.time()
@@ -201,22 +201,22 @@ def _sweep_abandoned_tmp(cairn_dir: str, *, max_age: float = _TMP_STALE_SECONDS)
 
 
 def gc_outputs(store_path: str) -> list[str]:
-    """Sweep stones, CAS entries, and stale .tmp-* dirs not reachable from any run.
+    """Sweep records, CAS entries, and stale .tmp-* dirs not reachable from any run.
 
-    Mark phase: every run's `steps/*` symlink pulls its target stone into the
-    live set, which transitively pulls `children/*` stones and each stone's
-    `result` content hash. Sweep phase: delete unreferenced stones, clean up
+    Mark phase: every run's `steps/*` symlink pulls its target record into the
+    live set, which transitively pulls `children/*` records and each record's
+    `result` content hash. Sweep phase: delete unreferenced records, clean up
     abandoned `.tmp-*` dirs, drop empty cairns, and remove unreferenced CAS
     files.
 
-    Returns the list of removed CAS filenames (stones removed silently).
+    Returns the list of removed CAS filenames (records removed silently).
     """
     outputs_dir = os.path.join(store_path, "store")
     if not os.path.isdir(outputs_dir):
         return []
 
     with _gc_exclusive(store_path):
-        live_stones, referenced = _live_from_runs(store_path)
+        live_records, referenced = _live_from_runs(store_path)
 
         cairns_dir = os.path.join(store_path, "cairns")
         if os.path.isdir(cairns_dir):
@@ -224,11 +224,11 @@ def gc_outputs(store_path: str) -> list[str]:
                 if not cairn.is_dir():
                     continue
                 _sweep_abandoned_tmp(cairn.path)
-                for stone in os.scandir(cairn.path):
-                    if stone.name.startswith("."):
+                for record in os.scandir(cairn.path):
+                    if record.name.startswith("."):
                         continue
-                    if stone.is_dir() and os.path.realpath(stone.path) not in live_stones:
-                        shutil.rmtree(stone.path)
+                    if record.is_dir() and os.path.realpath(record.path) not in live_records:
+                        shutil.rmtree(record.path)
                 if not any(os.scandir(cairn.path)):
                     os.rmdir(cairn.path)
 

@@ -9,14 +9,13 @@ from pathlib import Path
 
 import pytest
 
-from cairn.core import hash as _hash_mod
-from cairn.core.hash import (
-    clear_hash_funcs,
+from cairns.core import hash as _hash_mod
+from cairns.core.hash import (
     compute_cairn_id,
-    register_hash_func,
     resolve_hashable,
 )
-from cairn.core.types import StepInfo
+from cairns.core.runtime import default_runtime
+from cairns.core.types import StepInfo
 
 
 # ── resolve_hashable: cycles ──
@@ -152,22 +151,20 @@ def test_unknown_type_raises():
 
 def test_registered_type_works():
     try:
-        register_hash_func(_CustomThing, lambda c: {"thing": c.x})  # type: ignore[attr-defined]
+        default_runtime.register_hasher(_CustomThing, lambda c: {"thing": c.x})  # type: ignore[attr-defined]
         out = resolve_hashable(_CustomThing(42))
         # Hasher output is trusted verbatim (no __dict__ wrapping).
         assert out == {"thing": 42}
     finally:
-        _hash_mod._hash_funcs.pop(_CustomThing, None)  # pyright: ignore[reportPrivateUsage]
+        default_runtime.hash_funcs.pop(_CustomThing, None)
 
 
-def test_clear_reinstalls_defaults():
-    clear_hash_funcs()
-    try:
-        # Path default should be reinstalled.
-        out = resolve_hashable(Path("/nope"))
-        assert "__path__" in out
-    finally:
-        clear_hash_funcs()
+def test_install_defaults_registers_path():
+    # install_defaults onto a fresh Runtime registers Path.
+    from cairns.core.runtime import Runtime
+
+    rt = Runtime()
+    assert Path in rt.hash_funcs
 
 
 # ── StepInfo.from_function ──
@@ -459,7 +456,7 @@ def test_pydantic_install_is_guarded(monkeypatch: pytest.MonkeyPatch):
     import builtins
     import sys
 
-    from cairn.core import hash as h
+    from cairns.core import hash as h
 
     real_import = builtins.__import__
 
@@ -471,20 +468,21 @@ def test_pydantic_install_is_guarded(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(builtins, "__import__", fake_import)
     monkeypatch.delitem(sys.modules, "pydantic", raising=False)
 
-    h.clear_hash_funcs()
-    # clear_hash_funcs reinstalls defaults; with pydantic import blocked,
-    # BaseModel should NOT be in the registry.
-    assert Path in h._hash_funcs  # pyright: ignore[reportPrivateUsage]
+    # Building a fresh Runtime under a blocked pydantic import should
+    # install Path/partial defaults but skip BaseModel.
+    from cairns.core.runtime import Runtime
+
+    rt = Runtime()
+    assert Path in rt.hash_funcs
     try:
         from pydantic import BaseModel
 
-        assert BaseModel not in h._hash_funcs  # pyright: ignore[reportPrivateUsage]
+        assert BaseModel not in rt.hash_funcs
     except ImportError:
         pass  # truly absent — also fine
 
-    # Restore real imports and reinstall so other tests see pydantic.
     monkeypatch.undo()
-    h.clear_hash_funcs()
+    _ = h  # keep reference for diagnostics
 
 
 def test_pydantic_subclass_hits_basemodel_registration():

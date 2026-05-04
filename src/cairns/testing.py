@@ -5,19 +5,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from .context import Event, MemorySink, reset_id_counter, set_sink
-from cairn.core import set_store
-from .hash import clear_hash_funcs, set_hash_funcs
-from .store import MemoryStore
+from cairns.core.runtime import Runtime, Event, MemorySink, Run
+from cairns.core.store import MemoryStore
 
 
 @dataclass
 class SpanInfo:
     """Summary info about a completed span."""
 
-    id: int
+    seq: int
     name: str
-    parent_id: int | None
+    parent_seq: int | None
     identity: str
     cached: bool
     start_ts: float
@@ -45,41 +43,41 @@ class TraceInspector:
         if not spawns:
             raise KeyError(f"No span found with name {name!r}")
         spawn = spawns[0]
-        span_id = spawn.id
-        assert span_id is not None
+        span_seq = spawn.seq
+        assert span_seq is not None
 
-        ends = [e for e in self._sink.events if e.kind == "end" and e.id == span_id]
+        ends = [e for e in self._sink.events if e.kind == "end" and e.seq == span_seq]
         end_ts = ends[0].ts if ends else 0.0
         cached = ends[0].cached if ends and ends[0].cached is not None else False
 
         identity_str: str = spawn.kwargs.get("identity", "")
 
         return SpanInfo(
-            id=span_id,
+            seq=span_seq,
             name=name,
-            parent_id=spawn.parent_id,
+            parent_seq=spawn.parent_seq,
             identity=identity_str,
             cached=cached,
             start_ts=spawn.ts,
             end_ts=end_ts,
         )
 
-    def span_name(self, span_id: int) -> str | None:
-        """Get the name of a span by its ID."""
+    def span_name(self, span_seq: int) -> str | None:
+        """Get the name of a span by its sequence number."""
         for e in self._sink.events:
-            if e.kind == "spawn" and e.id == span_id:
+            if e.kind == "spawn" and e.seq == span_seq:
                 return e.name
         return None
 
-    def child_events(self, parent_id: int, kind: str) -> list[Event]:
+    def child_events(self, parent_seq: int, kind: str) -> list[Event]:
         """Get events of a given kind that are children of a span.
 
-        For `wait` events (which fire on the awaiter), matches on event id
-        equal to parent_id. For other events, matches on parent_id.
+        For `wait` events (which fire on the awaiter), matches on event seq
+        equal to parent_seq. For other events, matches on parent_seq.
         """
         if kind == "wait":
-            return [e for e in self._sink.events if e.kind == kind and e.id == parent_id]
-        return [e for e in self._sink.events if e.kind == kind and e.parent_id == parent_id]
+            return [e for e in self._sink.events if e.kind == kind and e.seq == parent_seq]
+        return [e for e in self._sink.events if e.kind == kind and e.parent_seq == parent_seq]
 
     def edge_annotations(self, parent_name: str) -> list[Event]:
         """Get trace events with edge=True under a named parent."""
@@ -88,7 +86,7 @@ class TraceInspector:
             e
             for e in self._sink.events
             if e.kind == "trace"
-            and e.parent_id == parent.id
+            and e.parent_seq == parent.seq
             and e.kwargs.get("edge") is True
         ]
 
@@ -101,37 +99,46 @@ class TraceInspector:
         return len([e for e in self._sink.events if e.kind == "end" and e.cached is True])
 
 
-class Runtime:
-    """Test runtime context manager.
+class Harness:
+    """Test harness — in-memory `Run` plus a `TraceInspector`.
 
-    Sets up an in-memory store and sink, provides trace inspection.
+    Usage:
+
+        async with Harness() as h:
+            await my_pipeline()
+            assert h.trace.span("step_x").cached is False
+
+    Pass `hash_funcs=` to register per-test hashers without polluting
+    other tests; alternatively pass `runtime=` to use a configured
+    `Runtime` (e.g. one constructed with custom serializers).
     """
 
     def __init__(
         self,
         hash_funcs: dict[type, Callable[[Any], Any]] | None = None,
+        runtime: Runtime | None = None,
     ) -> None:
-        self._store = MemoryStore()
+        if runtime is None:
+            runtime = Runtime()
+        if hash_funcs:
+            for tp, fn in hash_funcs.items():
+                runtime.register_hasher(tp, fn)
+        self._runtime = runtime
         self._sink = MemorySink()
-        self._hash_funcs = hash_funcs or {}
-        self._store_token: Any = None
-        self._sink_token: Any = None
+        self._run = Run(
+            runtime=runtime,
+            store=MemoryStore(),
+            sink=self._sink,
+        )
         self.trace = TraceInspector(self._sink)
 
-    async def __aenter__(self) -> Runtime:
-        reset_id_counter()
-        self._store_token = set_store(self._store)
-        self._sink_token = set_sink(self._sink)
-        if self._hash_funcs:
-            set_hash_funcs(self._hash_funcs)
+    @property
+    def runtime(self) -> Runtime:
+        return self._runtime
+
+    async def __aenter__(self) -> "Harness":
+        self._run.__enter__()
         return self
 
     async def __aexit__(self, *args: Any) -> None:
-        from .step import reset_store
-        from .context import reset_sink
-
-        if self._store_token is not None:
-            reset_store(self._store_token)
-        if self._sink_token is not None:
-            reset_sink(self._sink_token)
-        clear_hash_funcs()
+        self._run.__exit__(*args)

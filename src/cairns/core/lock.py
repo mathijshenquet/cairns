@@ -1,7 +1,7 @@
 """Shared/exclusive store lock.
 
 `.cairn/gc.lock` is the rendezvous file. `FileStore.put` takes a **shared** lock
-while publishing a stone (makedirs → rename); `gc_outputs` takes an **exclusive**
+while publishing a record (makedirs → rename); `gc_outputs` takes an **exclusive**
 lock while running mark + sweep. Multiple concurrent runs can publish; a GC
 request waits until in-flight publishes drain, and blocks new publishes until
 sweep completes.

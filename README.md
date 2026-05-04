@@ -45,7 +45,7 @@ Requires Python 3.12+.
 
 ```python
 import asyncio
-from cairn import step, run, trace
+from cairns import step, run, trace
 
 @step(memo=True)
 async def fetch(url: str) -> str:
@@ -73,23 +73,23 @@ re-executes, fetches are cache hits.
 ## CLI
 
 ```sh
-cairn examples/research_fake_llm.py        # run the pipeline, opens TUI if installed
-cairn examples/research_fake_llm.py slow   # run the `slow` entry point
-cairn examples/research_fake_llm.py -f     # clear this entry's cache, then run
-cairn                                      # interactive run browser over past runs
-cairn list                                 # flat list of runs
-cairn show [RUN_ID]                        # print a trace (latest if omitted)
-cairn gc [--before YYYY-MM-DD]             # garbage-collect old runs
+cairns examples/research_fake_llm.py        # run the pipeline, opens TUI if installed
+cairns examples/research_fake_llm.py slow   # run the `slow` entry point
+cairns examples/research_fake_llm.py -f     # clear this entry's cache, then run
+cairns                                      # interactive run browser over past runs
+cairns list                                 # flat list of runs
+cairns show [RUN_ID]                        # print a trace (latest if omitted)
+cairns gc [--before YYYY-MM-DD]             # garbage-collect old runs
 ```
 
 Default store is `./.cairn/`. Override with `--store PATH` (or `-s`). Entry
 points default to a function named `main`; pass a second positional arg to
-pick another, e.g. `cairn script.py my_pipeline`.
+pick another, e.g. `cairns script.py my_pipeline`.
 
 ## Examples
 
 Each example runs standalone with `python examples/<name>.py`, or through the
-CLI with `cairn examples/<name>.py` for the TUI.
+CLI with `cairns examples/<name>.py` for the TUI.
 
 | Example | What it shows |
 |---------|---------------|
@@ -101,14 +101,14 @@ CLI with `cairn examples/<name>.py` for the TUI.
 
 ## What you'll see
 
-With `cairn[tui]` installed, the CLI opens a live span tree: each `@step`
+With `cairns[tui]` installed, the CLI opens a live span tree: each `@step`
 invocation is a row, child steps indent, `trace(...)` calls attach as
 annotations, and `cost={...}` kwargs get summed up the tree. Failures colour
 red, running steps pulse, completed steps show wall time + own time (excluding
 waits on children).
 
 Without the TUI, the same events stream to `.cairn/runs/{entry}-{ts}/trace.jsonl`
-and you can read them with `cairn show`.
+and you can read them with `cairns show`.
 
 ## Docs
 
