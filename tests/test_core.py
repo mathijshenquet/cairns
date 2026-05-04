@@ -498,7 +498,7 @@ async def test_version_change_invalidates_cache():
         assert call_count == 1
 
         # "Upgrade" to v2 — should cache miss
-        compute_v2 = step(compute.__wrapped__, memo=True, version="v2")
+        compute_v2 = step(memo=True, version="v2")(compute.__wrapped__)
         assert await compute_v2(5) == 10
         assert call_count == 2
 
@@ -523,11 +523,10 @@ async def test_version_pins_cache_against_body_edits():
         # because version is declared, the memo predicate matches by version
         # and the cache hits.
         compute_v2 = step(
-            compute.__wrapped__,
             memo=True,
             body_hash="forced-different-body-hash",
             version="1.0.0",
-        )
+        )(compute.__wrapped__)
         assert await compute_v2(5) == 10
         assert call_count == 1
 
@@ -549,7 +548,7 @@ async def test_memo_predicate_picks_first_match():
             async def _seed() -> str:
                 return captured  # noqa: B023 — closure capture is intentional
 
-            s = step(_seed, memo=True, identity="emit", version=ver)
+            s = step(memo=True, identity="emit", version=ver)(_seed)
             await s()
 
         @step(memo=lambda r: r.version == "v2", identity="emit")
@@ -591,7 +590,7 @@ async def _stack_versions(versions: tuple[str, ...]) -> Cairn:
         async def _seed() -> str:
             return captured  # noqa: B023 — closure capture is intentional
 
-        s = step(_seed, memo=False, identity="emit", version=ver)
+        s = step(memo=False, identity="emit", version=ver)(_seed)
         await s()
 
     @step(identity="emit")

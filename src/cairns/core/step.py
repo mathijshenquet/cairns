@@ -683,19 +683,7 @@ def _bind_args(fn: Callable[..., Any], args: tuple[Any, ...], kwargs: dict[str, 
 
 
 @overload
-def step(fn: Callable[P, Awaitable[R]]) -> Callable[P, Handle[R]]: ...
-
-
-@overload
-def step(
-    fn: Callable[P, Awaitable[R]],
-    *,
-    memo: bool | Predicate = ...,
-    identity: StrOverride = ...,
-    body_hash: StrOverride = ...,
-    version: str | None = ...,
-    tags: dict[str, str] | None = ...,
-) -> Callable[P, Handle[R]]: ...
+def step(fn: Callable[P, Awaitable[R]], /) -> Callable[P, Handle[R]]: ...
 
 
 @overload
