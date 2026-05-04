@@ -93,12 +93,11 @@ def resolve_hashable(value: Any, _seen: dict[int, bool] | None = None) -> Any:
     )
 
 
-def compute_cache_key(identity: str, version: str, resolved_args: dict[str, Any]) -> str:
-    """Compute a cache key from identity, version, and resolved arguments."""
+def compute_cairn_id(identity: str, resolved_args: dict[str, Any]) -> str:
+    """Compute a cairn id: computation identity + args, excluding version."""
     canonical = json.dumps(
         {
             "identity": identity,
-            "version": version,
             "args": resolve_hashable(resolved_args),
         },
         sort_keys=True,

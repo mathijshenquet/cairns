@@ -34,7 +34,8 @@ class Span:
     spawn_ts: float | None = None
     start_ts: float | None = None
     end_ts: float | None = None
-    cache_key: str | None = None
+    stone_path: str | None = None
+    origin: str | None = None  # "created" | "recalled" | "carried"
     error: str | None = None
     metrics: dict[str, Any] = field(default_factory=lambda: cast(dict[str, Any], {}))
     traces: list[dict[str, Any]] = field(default_factory=lambda: cast(list[dict[str, Any]], []))
@@ -88,7 +89,8 @@ class SpanGraph:
                 s.end_ts = ts
                 if kind == "end":
                     s.status = "cached" if e.get("cached") else "ok"
-                    s.cache_key = e.get("cache_key")
+                    s.stone_path = e.get("stone_path")
+                    s.origin = e.get("origin")
                 elif kind == "error":
                     s.status = "error"
                     s.error = str(e.get("err", "error"))

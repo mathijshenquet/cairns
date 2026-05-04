@@ -6,9 +6,16 @@ Nix-style: remove runs, then sweep orphaned outputs.
 from __future__ import annotations
 
 import os
+import re
 import shutil
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
+
+from cairn.core.lock import gc_exclusive as _gc_exclusive
+
+
+_RUN_ID_RE = re.compile(r"^(?P<entry>.+)-(?P<ts>\d{4}-\d{2}-\d{2}T[\d:.]+)$")
 
 
 @dataclass
@@ -24,28 +31,20 @@ class RunInfo:
 
 
 def _parse_run_id(run_id: str) -> tuple[str, datetime] | None:
-    """Parse a run directory name into (entry_name, timestamp).
+    """Parse `{entry}-{ISO datetime}` into (entry_name, timestamp), or None.
 
-    Expected format: {entry_name}-{ISO datetime with microseconds}
-    e.g. 'pipeline-2026-04-16T13:05:56.123456'
+    The entry name may contain hyphens; the regex anchors on the trailing ISO
+    timestamp (YYYY-MM-DDTHH:MM:SS[.ffffff]) and treats everything before it
+    as the entry name.
     """
-    # Find the datetime part by looking for the T separator
-    # The entry name can contain hyphens, so split from the right
-    # looking for the ISO date pattern
-    for i in range(len(run_id) - 1, 0, -1):
-        if run_id[i] == "T" and i >= 11:
-            # Try to parse everything from the date start
-            # Date starts 10 chars before the T: YYYY-MM-DD
-            date_start = i - 10
-            if date_start > 0 and run_id[date_start - 1] == "-":
-                entry_name = run_id[: date_start - 1]
-                ts_str = run_id[date_start:]
-                try:
-                    ts = datetime.fromisoformat(ts_str).replace(tzinfo=timezone.utc)
-                    return (entry_name, ts)
-                except ValueError:
-                    continue
-    return None
+    m = _RUN_ID_RE.match(run_id)
+    if m is None:
+        return None
+    try:
+        ts = datetime.fromisoformat(m["ts"]).replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+    return (m["entry"], ts)
 
 
 def _get_gc_roots(runs_dir: str) -> set[str]:
@@ -65,15 +64,38 @@ def _get_gc_roots(runs_dir: str) -> set[str]:
     return roots
 
 
-def _get_referenced_outputs(run_path: str) -> set[str]:
-    """Get output filenames referenced by symlinks in a run directory."""
-    refs: set[str] = set()
-    for entry in os.scandir(run_path):
-        if entry.is_symlink():
-            target = os.readlink(entry.path)
-            # target is like '../../outputs/abc123.json'
-            refs.add(os.path.basename(target))
-    return refs
+def _mark_stone(stone: str, live_stones: set[str], live_outputs: set[str]) -> None:
+    stone = os.path.realpath(stone)
+    if stone in live_stones or not os.path.isdir(stone):
+        return
+    live_stones.add(stone)
+    result = os.path.join(stone, "result")
+    if os.path.exists(result):
+        live_outputs.add(os.path.basename(os.path.realpath(result)))
+    children = os.path.join(stone, "children")
+    if os.path.isdir(children):
+        for entry in os.scandir(children):
+            if entry.is_symlink():
+                _mark_stone(entry.path, live_stones, live_outputs)
+
+
+def _live_from_runs(store_path: str) -> tuple[set[str], set[str]]:
+    """Return live stone dirs and store filenames reachable from run steps."""
+    live_stones: set[str] = set()
+    live_outputs: set[str] = set()
+    runs_dir = os.path.join(store_path, "runs")
+    if not os.path.isdir(runs_dir):
+        return live_stones, live_outputs
+    for run in os.scandir(runs_dir):
+        if not run.is_dir(follow_symlinks=False) or _parse_run_id(run.name) is None:
+            continue
+        steps = os.path.join(run.path, "steps")
+        if not os.path.isdir(steps):
+            continue
+        for step in os.scandir(steps):
+            if step.is_symlink():
+                _mark_stone(step.path, live_stones, live_outputs)
+    return live_stones, live_outputs
 
 
 def list_runs(store_path: str) -> list[RunInfo]:
@@ -93,7 +115,9 @@ def list_runs(store_path: str) -> list[RunInfo]:
             continue
 
         entry_name, timestamp = parsed
-        symlink_count = sum(1 for e in os.scandir(entry.path) if e.is_symlink())
+        steps = os.path.join(entry.path, "steps")
+        count_dir = steps if os.path.isdir(steps) else entry.path
+        symlink_count = sum(1 for e in os.scandir(count_dir) if e.is_symlink())
 
         runs.append(RunInfo(
             run_id=entry.name,
@@ -147,36 +171,74 @@ def remove_runs_before(
     return removed
 
 
-def gc_outputs(store_path: str) -> list[str]:
-    """Remove output files not referenced by any remaining run.
+_TMP_STALE_SECONDS = 15 * 60
 
-    Nix-style garbage collection: scan all run directories for symlinks,
-    collect the set of referenced output files, delete everything else.
 
-    Returns:
-        List of removed output filenames.
+def _sweep_abandoned_tmp(cairn_dir: str, *, max_age: float = _TMP_STALE_SECONDS) -> None:
+    """Remove .tmp-{id} dirs older than `max_age` seconds.
+
+    A crash between `makedirs(.tmp-…)` and `os.replace(..., stone_id)` leaves a
+    partial stone the reader is designed to ignore (missing metadata.json). This
+    janitor cleans them up so they don't accumulate forever.
     """
-    outputs_dir = os.path.join(store_path, "outputs")
-    runs_dir = os.path.join(store_path, "runs")
+    now = time.time()
+    for entry in os.scandir(cairn_dir):
+        if not entry.name.startswith(".tmp-"):
+            continue
+        try:
+            mtime = entry.stat(follow_symlinks=False).st_mtime
+        except OSError:
+            continue
+        if now - mtime < max_age:
+            continue
+        try:
+            if entry.is_dir(follow_symlinks=False):
+                shutil.rmtree(entry.path)
+            else:
+                os.unlink(entry.path)
+        except OSError:
+            pass
 
+
+def gc_outputs(store_path: str) -> list[str]:
+    """Sweep stones, CAS entries, and stale .tmp-* dirs not reachable from any run.
+
+    Mark phase: every run's `steps/*` symlink pulls its target stone into the
+    live set, which transitively pulls `children/*` stones and each stone's
+    `result` content hash. Sweep phase: delete unreferenced stones, clean up
+    abandoned `.tmp-*` dirs, drop empty cairns, and remove unreferenced CAS
+    files.
+
+    Returns the list of removed CAS filenames (stones removed silently).
+    """
+    outputs_dir = os.path.join(store_path, "store")
     if not os.path.isdir(outputs_dir):
         return []
 
-    # Collect all referenced outputs across all remaining runs
-    referenced: set[str] = set()
-    if os.path.isdir(runs_dir):
-        for entry in os.scandir(runs_dir):
-            if entry.is_dir(follow_symlinks=False) and _parse_run_id(entry.name) is not None:
-                referenced.update(_get_referenced_outputs(entry.path))
+    with _gc_exclusive(store_path):
+        live_stones, referenced = _live_from_runs(store_path)
 
-    # Remove unreferenced outputs
-    removed: list[str] = []
-    for entry in os.scandir(outputs_dir):
-        if entry.is_file() and entry.name not in referenced:
-            os.unlink(entry.path)
-            removed.append(entry.name)
+        cairns_dir = os.path.join(store_path, "cairns")
+        if os.path.isdir(cairns_dir):
+            for cairn in os.scandir(cairns_dir):
+                if not cairn.is_dir():
+                    continue
+                _sweep_abandoned_tmp(cairn.path)
+                for stone in os.scandir(cairn.path):
+                    if stone.name.startswith("."):
+                        continue
+                    if stone.is_dir() and os.path.realpath(stone.path) not in live_stones:
+                        shutil.rmtree(stone.path)
+                if not any(os.scandir(cairn.path)):
+                    os.rmdir(cairn.path)
 
-    return removed
+        removed: list[str] = []
+        for entry in os.scandir(outputs_dir):
+            if entry.is_file() and entry.name not in referenced:
+                os.unlink(entry.path)
+                removed.append(entry.name)
+
+        return removed
 
 
 def gc(

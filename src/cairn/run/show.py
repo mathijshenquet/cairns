@@ -26,9 +26,6 @@ _DIM = "\033[2m"
 _RED = "\033[31m"
 _GREEN = "\033[32m"
 _YELLOW = "\033[33m"
-_BLUE = "\033[34m"
-_MAGENTA = "\033[35m"
-_CYAN = "\033[36m"
 
 
 def _color(text: str, color: str) -> str:
@@ -231,7 +228,7 @@ def show_runs(store_path: str) -> None:
         elif age.total_seconds() > 60:
             age_str = f"{age.total_seconds() / 60:.0f}m ago"
 
-        print(f"  {r.entry_name:20s} {r.run_id:50s} {r.symlink_count:3d} outputs  {age_str}{latest}")
+        print(f"  {r.entry_name:20s} {r.run_id:50s} {r.symlink_count:3d} steps  {age_str}{latest}")
     print()
 
 
@@ -239,32 +236,68 @@ def show_runs(store_path: str) -> None:
 
 
 def show_output(path: str) -> None:
-    """Pretty-print a cached output file."""
+    """Pretty-print a stone (directory) or a CAS result file."""
+    if os.path.isdir(path):
+        _show_stone(path)
+        return
+
     with open(path, "r", encoding="utf-8") as f:
         data: dict[str, Any] = json.load(f)
-
     result = data.get("result")
-    traces = data.get("traces", [])
-    duration = data.get("duration", 0)
-    error = data.get("error")
+    print(f"\n{_BOLD}Result:{_RESET}")
+    if isinstance(result, str):
+        print(f"  {result}")
+    else:
+        print(f"  {json.dumps(result, indent=2)}")
+    print()
+
+
+def _show_stone(stone_path: str) -> None:
+    meta_path = os.path.join(stone_path, "metadata.json")
+    events_path = os.path.join(stone_path, "events.jsonl")
+    result_link = os.path.join(stone_path, "result")
+
+    meta: dict[str, Any] = {}
+    if os.path.isfile(meta_path):
+        with open(meta_path, "r", encoding="utf-8") as f:
+            meta = json.load(f)
+
+    error = meta.get("error")
+    duration = float(meta.get("duration", 0.0))
 
     if error:
         print(f"\n{_color('ERROR', _RED)}: {error}")
-    else:
+    elif os.path.exists(result_link):
+        with open(result_link, "r", encoding="utf-8") as f:
+            data: dict[str, Any] = json.load(f)
+        result = data.get("result")
         print(f"\n{_BOLD}Result:{_RESET}")
         if isinstance(result, str):
             print(f"  {result}")
         else:
             print(f"  {json.dumps(result, indent=2)}")
 
+    traces: list[dict[str, Any]] = []
+    if os.path.isfile(events_path):
+        with open(events_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    e: dict[str, Any] = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if e.get("kind") == "trace":
+                    traces.append(e)
+
     if traces:
         print(f"\n{_BOLD}Traces:{_RESET}")
-        first_ts = traces[0].get("timestamp", 0) if traces else 0
         for t in traces:
             msg = t.get("message", "")
-            elapsed = t.get("timestamp", 0) - first_ts
+            elapsed = float(t.get("ts", 0.0))
+            kw: dict[str, Any] = t.get("kwargs", {}) or {}
             kwargs_str = ""
-            kw: dict[str, Any] = t.get("kwargs", {})
             if kw:
                 kwargs_str = " " + " ".join(f"{k}={v}" for k, v in kw.items())
                 kwargs_str = _DIM + kwargs_str + _RESET

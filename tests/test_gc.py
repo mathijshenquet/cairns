@@ -10,6 +10,26 @@ from pathlib import Path
 from cairn import step, gc, list_runs, remove_run, remove_runs_before, run, trace
 
 
+def _store_files(store_path: str) -> set[str]:
+    store_dir = os.path.join(store_path, "store")
+    if not os.path.isdir(store_dir):
+        return set()
+    return set(os.listdir(store_dir))
+
+
+def _stone_dirs(store_path: str) -> list[str]:
+    cairns = os.path.join(store_path, "cairns")
+    if not os.path.isdir(cairns):
+        return []
+    return [
+        os.path.join(cairn.path, stone.name)
+        for cairn in os.scandir(cairns)
+        if cairn.is_dir()
+        for stone in os.scandir(cairn.path)
+        if stone.is_dir()
+    ]
+
+
 def _make_runs(tmp_path: Path, n: int = 3) -> str:
     """Helper: create n runs of a simple pipeline."""
     store_path = str(tmp_path / ".cairn")
@@ -33,12 +53,9 @@ def test_list_runs(tmp_path: Path) -> None:
 
     assert len(runs) == 3
     assert all(r.entry_name == "work" for r in runs)
-    # Sorted by timestamp
     assert runs[0].timestamp <= runs[1].timestamp <= runs[2].timestamp
-    # Last one is latest
     assert runs[-1].is_latest
     assert not runs[0].is_latest
-    # All have symlinks
     assert all(r.symlink_count >= 1 for r in runs)
 
 
@@ -72,13 +89,10 @@ def test_remove_runs_before(tmp_path: Path) -> None:
     store_path = _make_runs(tmp_path, n=3)
     runs = list_runs(store_path)
 
-    # Remove runs before the last one's timestamp
     cutoff = runs[-1].timestamp
     removed = remove_runs_before(store_path, cutoff, keep_latest=True)
 
-    # First two should be removed (but if one is latest, it's kept)
     remaining = list_runs(store_path)
-    # At minimum, the latest is kept
     assert any(r.is_latest for r in remaining)
     assert len(removed) >= 1
 
@@ -90,76 +104,70 @@ def test_remove_runs_before_keeps_latest(tmp_path: Path) -> None:
     assert len(runs) == 1
     assert runs[0].is_latest
 
-    # Try to remove everything
     far_future = datetime(2099, 1, 1, tzinfo=timezone.utc)
     removed = remove_runs_before(store_path, far_future, keep_latest=True)
-    assert len(removed) == 0  # latest is protected
+    assert len(removed) == 0
 
-    # With keep_latest=False, it gets removed
     removed = remove_runs_before(store_path, far_future, keep_latest=False)
     assert len(removed) == 1
 
 
 def test_gc_outputs(tmp_path: Path) -> None:
-    """gc_outputs() removes unreferenced output files."""
+    """gc_outputs() removes stones and CAS entries not referenced by any remaining run."""
     store_path = _make_runs(tmp_path, n=3)
 
-    outputs_dir = tmp_path / ".cairn" / "outputs"
-    outputs_before = set(os.listdir(outputs_dir))
-    assert len(outputs_before) >= 3  # at least one per run
+    store_before = _store_files(store_path)
+    stones_before = _stone_dirs(store_path)
+    assert len(store_before) >= 3
+    assert len(stones_before) >= 3
 
-    # Remove first two runs — their outputs may become orphaned
+    # Remove first two runs — their stones should now be unreachable.
     runs = list_runs(store_path)
     remove_run(store_path, runs[0].run_id)
     remove_run(store_path, runs[1].run_id)
 
-    # GC outputs
     from cairn.run import gc_outputs
-    removed = gc_outputs(store_path)
+    gc_outputs(store_path)
 
-    outputs_after = set(os.listdir(outputs_dir))
-    # Some outputs should have been removed (unless all runs share the same cache keys)
-    # At minimum, no output is unreferenced now
-    remaining_runs = list_runs(store_path)
-    for r in remaining_runs:
-        for entry in os.scandir(r.path):
+    # Every symlink under any remaining run's steps/ still resolves.
+    for r in list_runs(store_path):
+        steps_dir = os.path.join(r.path, "steps")
+        if not os.path.isdir(steps_dir):
+            continue
+        for entry in os.scandir(steps_dir):
             if entry.is_symlink():
                 target = Path(entry.path).resolve()
-                assert target.exists(), f"symlink {entry.name} points to missing output"
+                assert target.exists(), f"steps/{entry.name} points to missing stone"
+                assert (target / "metadata.json").exists()
 
 
 def test_gc_full_cycle(tmp_path: Path) -> None:
-    """Full GC: remove old runs, sweep orphaned outputs."""
+    """Full GC: remove old runs, sweep orphaned stones + CAS files."""
     store_path = _make_runs(tmp_path, n=5)
 
-    outputs_before = len(os.listdir(tmp_path / ".cairn" / "outputs"))
+    store_before = len(_store_files(store_path))
     runs_before = list_runs(store_path)
     assert len(runs_before) == 5
 
-    # GC everything before the 4th run
     cutoff = runs_before[3].timestamp
-    removed_runs, removed_outputs = gc(store_path, before=cutoff, keep_latest=True)
+    gc(store_path, before=cutoff, keep_latest=True)
 
-    # Should have removed runs 0-2 (3 is the cutoff, 4 is latest and after cutoff)
     remaining = list_runs(store_path)
-    assert len(remaining) <= 3  # at most runs 3, 4, and maybe the latest-protected one
+    assert len(remaining) <= 3
     assert any(r.is_latest for r in remaining)
 
-    # Outputs should be cleaned up
-    outputs_after = len(os.listdir(tmp_path / ".cairn" / "outputs"))
-    # Can't assert exact count since cache hits may share outputs
-    assert outputs_after <= outputs_before
+    store_after = len(_store_files(store_path))
+    assert store_after <= store_before
 
 
 def test_gc_with_shared_outputs(tmp_path: Path) -> None:
-    """Outputs shared between runs are not removed until all referencing runs are gone."""
+    """CAS entries shared between runs survive until all referring runs are gone."""
     store_path = str(tmp_path / ".cairn")
 
-    @step
+    @step(memo=True)
     async def constant() -> str:
         return "always the same"
 
-    # Two runs producing the same cached output
     run(constant, store_path=store_path)
     time.sleep(0.01)
     run(constant, store_path=store_path)
@@ -167,18 +175,40 @@ def test_gc_with_shared_outputs(tmp_path: Path) -> None:
     runs = list_runs(store_path)
     assert len(runs) == 2
 
-    # Remove first run
     remove_run(store_path, runs[0].run_id)
 
-    # GC — output should NOT be removed (still referenced by run 2)
     from cairn.run import gc_outputs
-    removed = gc_outputs(store_path)
+    gc_outputs(store_path)
 
-    # The shared output should still exist
     remaining_run = list_runs(store_path)[0]
-    for entry in os.scandir(remaining_run.path):
+    steps_dir = os.path.join(remaining_run.path, "steps")
+    for entry in os.scandir(steps_dir):
         if entry.is_symlink():
-            assert Path(entry.path).resolve().exists()
+            target = Path(entry.path).resolve()
+            assert target.exists()
+            assert (target / "result").exists()
+
+
+def test_gc_removes_unreachable_stones(tmp_path: Path) -> None:
+    """Dropping every run makes stones unreachable; GC removes them."""
+    store_path = _make_runs(tmp_path, n=2)
+
+    assert len(_stone_dirs(store_path)) >= 2
+
+    # Nuke every run directory (including GC-root symlinks).
+    runs_dir = Path(store_path) / "runs"
+    for entry in runs_dir.iterdir():
+        if entry.is_symlink():
+            entry.unlink()
+        else:
+            import shutil
+            shutil.rmtree(entry)
+
+    from cairn.run import gc_outputs
+    gc_outputs(store_path)
+
+    assert _stone_dirs(store_path) == []
+    assert _store_files(store_path) == set()
 
 
 def test_list_runs_multiple_entry_points(tmp_path: Path) -> None:
@@ -207,6 +237,5 @@ def test_list_runs_multiple_entry_points(tmp_path: Path) -> None:
     assert len(a_runs) == 2
     assert len(b_runs) == 1
 
-    # Each entry point has its own latest
     assert a_runs[-1].is_latest
     assert b_runs[0].is_latest

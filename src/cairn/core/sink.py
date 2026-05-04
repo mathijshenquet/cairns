@@ -32,6 +32,22 @@ def event_to_dict(event: Event) -> dict[str, Any]:
     return d
 
 
+class CompositeSink:
+    """Fans every event out to each wrapped sink in order.
+
+    Handy when one event stream needs to land in both a persistent log and a
+    live UI — wrap both sinks in a `CompositeSink` and install it as the
+    current sink. Each sub-sink sees the same `Event` reference.
+    """
+
+    def __init__(self, *sinks: Any) -> None:
+        self._sinks = list(sinks)
+
+    def emit(self, event: Event) -> None:
+        for sink in self._sinks:
+            sink.emit(event)
+
+
 class JSONLSink:
     """Writes events as JSONL to a file.
 
@@ -47,7 +63,10 @@ class JSONLSink:
     def emit(self, event: Event) -> None:
         if self._closed:
             return
-        event.ts = time.monotonic()
+        # Pre-stamped ts (e.g. from cache replay) is preserved so virtual-time
+        # events keep their reconstructed flamegraph timing.
+        if event.ts == 0.0:
+            event.ts = time.monotonic()
         line = json.dumps(event_to_dict(event), default=str)
         self._file.write(line + "\n")
         self._file.flush()

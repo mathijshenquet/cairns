@@ -44,6 +44,7 @@ async def extract_links(html: str) -> list[str]:
 async def extract_product(html: str) -> dict[str, str]:
     """Extract product info from HTML."""
     import re
+
     title_match = re.search(r"<title>(.*?)</title>", html)
     price_match = re.search(r"price=\$?([\d.]+)", html)
     stock_match = re.search(r"stock=(\d+)", html)
@@ -77,12 +78,10 @@ async def scrape_site(urls: list[str]) -> list[dict[str, str]]:
     return products
 
 
+
 # Default entry point for `cairn run`
-main = scrape_site
-
-if __name__ == "__main__":
-    import time
-
+@step
+async def main():
     urls = [
         "https://shop.example.com/product/1",
         "https://shop.example.com/product/2",
@@ -90,18 +89,22 @@ if __name__ == "__main__":
         "https://shop.example.com/product/4",
         "https://shop.example.com/product/5",
     ]
+    return await scrape_site(urls)
+
+if __name__ == "__main__":
+    import time
 
     print("First run (fetches all pages)...")
     t0 = time.monotonic()
-    products = run(scrape_site, store_path=".cairn", args=(urls,))
+    products = run(main, store_path=".cairn")
     t1 = time.monotonic()
     print(f"  {len(products)} products scraped in {t1 - t0:.2f}s\n")
 
     for p in products:
         print(f"  {p['title']} — ${p['price']} ({p['stock']} in stock)")
 
-    print(f"\nSecond run (fully cached)...")
+    print("\nSecond run (fully cached)...")
     t0 = time.monotonic()
-    products2 = run(scrape_site, store_path=".cairn", args=(urls,))
+    products2 = run(main, store_path=".cairn")
     t1 = time.monotonic()
     print(f"  {len(products2)} products in {t1 - t0:.3f}s (cached)")

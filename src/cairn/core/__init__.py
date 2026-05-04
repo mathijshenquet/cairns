@@ -29,15 +29,21 @@ from .context import (
 )
 from .hash import (
     clear_hash_funcs,
-    compute_cache_key,
+    compute_cairn_id,
     register_hash_func,
     resolve_hashable,
     set_hash_funcs,
 )
 from .patterns import rate_limited, replayable
-from .serial import deserialize, register_serializer, serialize
-from .sink import JSONLSink, event_to_dict
-from .store import FileStore, MemoryStore, Store, StoreStats
+from .serial import (
+    Serializer,
+    clear_serializers,
+    from_jsonable,
+    register_serializer,
+    to_jsonable,
+)
+from .sink import CompositeSink, JSONLSink, event_to_dict
+from .store import FileStore, MemoryStore, OverlayStore, Store, StoreStats
 from .types import CacheEntry, SpanMetrics, StepInfo, TaskSpan, TraceRecord
 
 __all__ = [
@@ -62,22 +68,26 @@ __all__ = [
     "next_id",
     "reset_id_counter",
     # hash
-    "compute_cache_key",
+    "compute_cairn_id",
     "register_hash_func",
     "set_hash_funcs",
     "clear_hash_funcs",
     "resolve_hashable",
     # serial
-    "serialize",
-    "deserialize",
+    "Serializer",
     "register_serializer",
+    "clear_serializers",
+    "to_jsonable",
+    "from_jsonable",
     # sink
     "JSONLSink",
+    "CompositeSink",
     "event_to_dict",
     # store
     "Store",
     "MemoryStore",
     "FileStore",
+    "OverlayStore",
     "StoreStats",
     # patterns
     "rate_limited",

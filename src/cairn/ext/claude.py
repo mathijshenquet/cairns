@@ -3,6 +3,7 @@
 Public API:
   claude_stream(prompt, **kwargs) → AsyncIterator[dict]   raw JSONL events
   claude(prompt, **kwargs)        → str                   final text + live traces
+  claude_json(prompt, Model, ...) → Model                 structured output via --json-schema
 """
 
 from __future__ import annotations
@@ -10,9 +11,14 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import AsyncIterator
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from cairn import trace
+
+if TYPE_CHECKING:
+    from pydantic import BaseModel
+
+M = TypeVar("M", bound="BaseModel")
 
 SYSTEM_PROMPT = (
     "You are a concise research assistant. Use WebSearch and WebFetch when "
@@ -31,6 +37,7 @@ async def claude_stream(
     system_prompt: str = SYSTEM_PROMPT,
     tools: str = "",
     deny_tools: str = DENY_TOOLS,
+    extra_args: list[str] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """Yield parsed JSON events from `claude -p --output-format stream-json`."""
     args = [
@@ -43,6 +50,7 @@ async def claude_stream(
         "--output-format", "stream-json",
         "--include-partial-messages",
         "--verbose",
+        *(extra_args or []),
         "--",
         prompt,
     ]
@@ -90,18 +98,25 @@ def _tool_result_text(content: Any) -> str:
     return json.dumps(content)
 
 
-async def claude(
+async def _claude_run(
     prompt: str,
     *,
-    tools: str = "",
-    model: str = MODEL,
-    system_prompt: str = SYSTEM_PROMPT,
-) -> str:
-    """Run claude, emit live traces for tool calls + results + cost, return final text."""
+    tools: str,
+    model: str,
+    system_prompt: str,
+    extra_args: list[str] | None,
+) -> dict[str, Any]:
+    """Stream claude, emit live traces for tool calls + results + cost, return the final result event."""
     # block index → {name, id, partial_json}
     pending: dict[int, dict[str, str]] = {}
 
-    async for event in claude_stream(prompt, model=model, system_prompt=system_prompt, tools=tools):
+    async for event in claude_stream(
+        prompt,
+        model=model,
+        system_prompt=system_prompt,
+        tools=tools,
+        extra_args=extra_args,
+    ):
         etype = event.get("type")
 
         # Assistant-side streaming events: tool_use blocks stream in here.
@@ -154,7 +169,7 @@ async def claude(
                     level="error" if b.get("is_error") else "info",
                 )
 
-        # Final result event: emit cost + return the text.
+        # Final result event: emit cost + return the full event for post-processing.
         elif etype == "result":
             usage = cast(dict[str, Any], event.get("usage") or {})
             cost: dict[str, Any] = {}
@@ -170,9 +185,60 @@ async def claude(
                 cost["cost_usd"] = event["total_cost_usd"]
             if cost:
                 trace(model, cost=cost)
-
-            if event.get("is_error"):
-                raise RuntimeError(f"claude error: {event.get('result', '(no output)')}")
-            return event.get("result", "")
+            return event
 
     raise RuntimeError("claude stream ended without a result event")
+
+
+async def claude(
+    prompt: str,
+    *,
+    tools: str = "",
+    model: str = MODEL,
+    system_prompt: str = SYSTEM_PROMPT,
+    extra_args: list[str] | None = None,
+) -> str:
+    """Run claude, emit live traces for tool calls + results + cost, return final text."""
+    event = await _claude_run(
+        prompt,
+        tools=tools,
+        model=model,
+        system_prompt=system_prompt,
+        extra_args=extra_args,
+    )
+    if event.get("is_error"):
+        raise RuntimeError(f"claude error: {event.get('result', '(no output)')}")
+    return event.get("result", "")
+
+
+async def claude_json(
+    prompt: str,
+    schema: type[M],
+    *,
+    tools: str = "",
+    model: str = MODEL,
+    system_prompt: str = SYSTEM_PROMPT,
+) -> M:
+    """Run claude with `--json-schema` enforcing `schema`, return a validated instance.
+
+    The CLI puts the enforced output on `structured_output` in the result event;
+    the `result` text field is still free-form prose. We pluck the structured
+    field and hand it to pydantic.
+    """
+    schema_json = json.dumps(schema.model_json_schema())
+    event = await _claude_run(
+        prompt,
+        tools=tools,
+        model=model,
+        system_prompt=system_prompt,
+        extra_args=["--json-schema", schema_json],
+    )
+    if event.get("is_error"):
+        raise RuntimeError(f"claude error: {event.get('result', '(no output)')}")
+    so = event.get("structured_output")
+    if so is None:
+        raise RuntimeError(
+            "claude_json: no `structured_output` in result event — "
+            "claude CLI may not support `--json-schema` in this combination."
+        )
+    return schema.model_validate(so)

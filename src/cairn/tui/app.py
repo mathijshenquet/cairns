@@ -18,9 +18,9 @@ from textual.widgets import Footer, Header, Input, Static
 from textual.widgets import Tree as TextualTree
 from textual.widgets.tree import TreeNode
 
-from cairn.core import Handle, set_sink, set_store
+from cairn.core import CompositeSink, Handle, set_sink, set_store
 from cairn.interaction import set_interaction_sink
-from cairn.run import CompositeSink, RunInfo, RunManager, SymlinkTracker, list_runs
+from cairn.run import RunInfo, RunManager, SymlinkTracker, list_runs
 from cairn.run.spans import SpanGraph
 
 from .messages import (
@@ -180,7 +180,7 @@ class CairnApp(App[None]):
                 tag = "[cyan]latest[/cyan]" if i == 0 else "      "
                 ts_short = r.timestamp.strftime("%Y-%m-%d %H:%M")
                 entry_node.add(
-                    f"{tag}  {ts_short}  [dim]{r.symlink_count} outputs[/dim]",
+                    f"{tag}  {ts_short}  [dim]{r.symlink_count} steps[/dim]",
                     data=f"run:{r.run_id}",
                     allow_expand=False,
                 )
@@ -252,13 +252,10 @@ class CairnApp(App[None]):
             if s is not None and s.start_ts is not None and s.end_ts is not None:
                 dur_str = self._format_duration(s.end_ts - s.start_ts)
             cached = s is not None and s.status == "cached"
+            # Prefix cached spans with a marker; keep the replayed subtree in
+            # the tree so the flamegraph shows what the cached work looked like.
             suffix = (f"cached {dur_str}".strip() if cached else dur_str)
             self._set_label(span_id, suffix)
-            if cached:
-                node = self.span_tree_nodes.get(span_id)
-                if node is not None:
-                    node.remove_children()
-                    node.allow_expand = False
             self._refresh_label_chain(span_id, include_self=False)
 
         elif kind == "error":
@@ -399,19 +396,30 @@ class CairnApp(App[None]):
 
         traces = s.traces
 
-        # Result (from cached output) — acts as the virtual last trace.
-        cache_key = s.cache_key
+        # Result (from the stone's result symlink into the CAS). Route through
+        # from_jsonable so pydantic envelopes etc. get unwrapped to their
+        # original shape; fall back to the raw form for display.
         result_str: str | None = None
-        if cache_key and status in ("ok", "cached"):
-            output_path = os.path.join(self._store_path, "outputs", f"{cache_key}.json")
-            if os.path.exists(output_path):
+        if s.stone_path and status in ("ok", "cached"):
+            result_link = os.path.join(s.stone_path, "result")
+            if os.path.exists(result_link):
+                from cairn.core import from_jsonable
                 try:
-                    with open(output_path, "r") as f:
+                    with open(result_link, "r") as f:
                         data: dict[str, Any] = json.load(f)
-                    result = data.get("result")
-                    result_str = (
-                        result if isinstance(result, str) else json.dumps(result, indent=2)
-                    )
+                    raw = data.get("result")
+                    try:
+                        result = from_jsonable(raw)
+                    except (TypeError, ModuleNotFoundError, AttributeError):
+                        result = raw
+                    if isinstance(result, str):
+                        result_str = result
+                    else:
+                        dump = getattr(result, "model_dump", None)
+                        if callable(dump):
+                            result_str = json.dumps(dump(mode="json"), indent=2, default=str)
+                        else:
+                            result_str = json.dumps(result, indent=2, default=str)
                 except (OSError, json.JSONDecodeError):
                     result_str = None
 
@@ -526,7 +534,7 @@ class CairnApp(App[None]):
                 self._update_detail(
                     f"[bold]{run_info.entry_name}[/bold]\n"
                     f"[dim]{run_info.timestamp}[/dim]\n"
-                    f"[dim]{run_info.symlink_count} outputs[/dim]\n\n"
+                    f"[dim]{run_info.symlink_count} steps[/dim]\n\n"
                     f"[dim]Press Enter to open[/dim]"
                 )
         elif data_str.startswith("entry:"):

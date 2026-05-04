@@ -11,9 +11,9 @@ import json
 import textwrap
 import time
 from dataclasses import dataclass, field
-from typing import Any, cast
+from typing import Any, Literal, cast
 
-from .hash import compute_cache_key, resolve_hashable
+from .hash import compute_cairn_id, resolve_hashable
 
 
 _UNRESOLVED = object()
@@ -168,7 +168,8 @@ class StepInfo:
 
     `name` answers "what function is this?" (module:qualname by default, stable
     across edits). `version` answers "which implementation?" — a sha256 digest
-    over source + resolved refs. `cache_key(args)` combines both with args.
+    over source + resolved refs. `cairn_id(args)` combines name+args to address
+    the cairn stack; version is stored per-stone and filtered at recall time.
     """
 
     name: str
@@ -211,8 +212,8 @@ class StepInfo:
     def short_version(self) -> str:
         return self.version[:8]
 
-    def cache_key(self, args: dict[str, Any]) -> str:
-        return compute_cache_key(self.name, self.version, args)
+    def cairn_id(self, args: dict[str, Any]) -> str:
+        return compute_cairn_id(self.name, args)
 
     def __repr__(self) -> str:
         return f"StepInfo({self.name!r}, version={self.short_version()})"
@@ -228,15 +229,30 @@ class TraceRecord:
     kwargs: dict[str, Any] = field(default_factory=lambda: {})
 
 
+Origin = Literal["recalled", "carried"]
+
+
 @dataclass
 class CacheEntry:
-    """Stored result of a step invocation."""
+    """Stored result of a step invocation.
+
+    `origin` is how the *resolver* reached this entry, not a property of the
+    stone itself. The default is "recalled" (picked from the cairn stack);
+    `OverlayStore` marks its hits as "carried" so the step wrapper knows to
+    short-circuit regardless of memo.
+    """
 
     result: Any
     traces: list[TraceRecord]
     error: BaseException | None = None
     duration: float = 0.0
     own_duration: float = 0.0
+    cairn_id: str | None = None
+    stone_id: str | None = None
+    stone_path: str | None = None
+    result_hash: str | None = None
+    child_refs: list[dict[str, str]] = field(default_factory=lambda: [])
+    origin: Origin = "recalled"
 
 
 @dataclass(frozen=True)
@@ -280,6 +296,10 @@ class TaskSpan:
     start_ts: float = field(default=0.0)
     end_ts: float = field(default=0.0)
     cached: bool = field(default=False)
+    cairn_id: str | None = field(default=None)
+    stone_id: str | None = field(default=None)
+    stone_path: str | None = field(default=None)
+    child_spans: list[TaskSpan] = field(default_factory=lambda: [])
 
     # Own-time tracking: wall time minus time spent awaiting child Handles.
     # `suspend_count` counts active Handle awaits (≥1 = this span is suspended);

@@ -19,7 +19,7 @@ from datetime import date
 from cairn import run, step, trace
 from cairn import rate_limited
 
-from claude import SEARCH_TOOLS, claude
+from cairn.ext.claude import SEARCH_TOOLS, claude
 
 
 COMPANIES = [

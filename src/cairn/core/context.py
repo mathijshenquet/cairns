@@ -64,7 +64,8 @@ class MemorySink:
         self.events: list[Event] = []
 
     def emit(self, event: Event) -> None:
-        event.ts = time.monotonic()
+        if event.ts == 0.0:
+            event.ts = time.monotonic()
         self.events.append(event)
 
 
@@ -96,8 +97,13 @@ def reset_sink(token: Token[Sink]) -> None:
     _sink.reset(token)
 
 
-def emit_event(kind: str, **kwargs: Any) -> Event:
-    """Emit an event to the current sink."""
-    event = Event(kind=kind, **kwargs)
+def emit_event(kind: str, *, ts: float = 0.0, **kwargs: Any) -> Event:
+    """Emit an event to the current sink.
+
+    If `ts` is provided (non-zero), sinks preserve it instead of stamping
+    wall-clock time — used by cache-replay so the flamegraph can reconstruct
+    the original timing of a cached subtree.
+    """
+    event = Event(kind=kind, ts=ts, **kwargs)
     get_sink().emit(event)
     return event

@@ -7,7 +7,9 @@ import os
 from datetime import datetime, timezone
 from typing import Any, Callable, TypeVar
 
-from cairn.core import Event, FileStore, Handle, JSONLSink, set_sink, set_store
+import json
+
+from cairn.core import Event, FileStore, Handle, JSONLSink, OverlayStore, set_sink, set_store
 
 R = TypeVar("R")
 
@@ -15,21 +17,20 @@ R = TypeVar("R")
 class RunManager:
     """Manages the on-disk layout for a single run.
 
-    Layout:
+    Layout::
+
         .cairn/
-            outputs/                        # content-addressed store
-                {cache_key}.json
+            cairns/{cairn_id}/{stone_id}/   # append-only stack of stones
+            store/{content_hash}.json        # value-bytes CAS
             runs/
                 {entry_point}-{datetime}/
                     trace.jsonl
-                    {seqid:03d}-{name} → ../../outputs/{key}.json
-                {entry_point}/
-                    latest → ../{entry_point}-{datetime}
+                    steps/{seqid:03d}-{name} → ../../../cairns/…/…/
+                {entry_point} → {entry_point}-{datetime}
     """
 
     def __init__(self, base_path: str, entry_name: str) -> None:
         self._base = os.path.abspath(base_path)
-        self._outputs_dir = os.path.join(self._base, "outputs")
         self._runs_dir = os.path.join(self._base, "runs")
 
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")
@@ -37,10 +38,10 @@ class RunManager:
         self._run_dir = os.path.join(self._runs_dir, self._run_id)
         self._entry_name = entry_name
 
-        os.makedirs(self._outputs_dir, exist_ok=True)
         os.makedirs(self._run_dir, exist_ok=True)
+        os.makedirs(os.path.join(self._run_dir, "steps"), exist_ok=True)
 
-        self._store = FileStore(self._outputs_dir)
+        self._store = FileStore(self._base)
         self._sink = JSONLSink(os.path.join(self._run_dir, "trace.jsonl"))
         self._seq = 0
 
@@ -56,38 +57,46 @@ class RunManager:
     def run_dir(self) -> str:
         return self._run_dir
 
-    def create_symlink(self, name: str, cache_key: str) -> None:
-        """Create a symlink from the run directory to the output store."""
+    def create_symlink(self, name: str, stone_path: str) -> None:
+        """Create an ordered run step symlink under steps/ to a resolved stone."""
+        if not stone_path:
+            return
         self._seq += 1
-        # Sanitize name for filesystem
-        safe_name = name.replace("/", ".").replace("\\", ".").replace(" ", "_")
+        safe_name = name.replace("/", ".").replace(chr(92), ".").replace(" ", "_")
         link_name = f"{self._seq:03d}-{safe_name}"
-        link_path = os.path.join(self._run_dir, link_name)
-        target = os.path.relpath(
-            os.path.join(self._outputs_dir, f"{cache_key}.json"),
-            self._run_dir,
-        )
+        steps_dir = os.path.join(self._run_dir, "steps")
+        link_path = os.path.join(steps_dir, link_name)
+        target = os.path.relpath(stone_path, steps_dir)
         try:
             os.symlink(target, link_path)
         except OSError:
-            pass  # symlink creation can fail on some systems
+            pass
+
+    def record_carry(self, carry: dict[str, str]) -> None:
+        """Persist the carry map so the run is reproducible.
+
+        Written before the body executes so even a crashed run leaves a
+        record of what was pinned.
+        """
+        if not carry:
+            return
+        path = os.path.join(self._run_dir, "carry.json")
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(carry, f, sort_keys=True, indent=2)
+                f.write("\n")
+        except OSError:
+            pass
 
     def update_latest(self) -> None:
-        """Update the GC root symlink for this entry point.
-
-        Creates {entry_name} → {entry_name}-{datetime} at the runs/ level.
-        This symlink IS the GC root — gc skips whatever it points to.
+        """Repoint the GC-root symlink `{entry_name} → {run_id}` so gc keeps
+        the latest run of each entry point alive.
         """
         root_link = os.path.join(self._runs_dir, self._entry_name)
-        target = self._run_id  # relative: just the dir name in the same directory
         try:
             if os.path.islink(root_link):
                 os.unlink(root_link)
-            elif os.path.isdir(root_link):
-                # Clean up old-style directory if it exists
-                import shutil
-                shutil.rmtree(root_link)
-            os.symlink(target, root_link)
+            os.symlink(self._run_id, root_link)
         except OSError:
             pass
 
@@ -113,20 +122,9 @@ class SymlinkTracker:
 
         if event.kind == "end" and event.id is not None:
             name = self._task_names.get(event.id, f"task-{event.id}")
-            cache_key: str | None = event.kwargs.get("cache_key")
-            if cache_key is not None:
-                self._rm.create_symlink(name, cache_key)
-
-
-class CompositeSink:
-    """Fans out events to multiple sinks."""
-
-    def __init__(self, *sinks: Any) -> None:
-        self._sinks = list(sinks)
-
-    def emit(self, event: Event) -> None:
-        for sink in self._sinks:
-            sink.emit(event)
+            stone_path: str | None = event.kwargs.get("stone_path")
+            if stone_path is not None:
+                self._rm.create_symlink(name, stone_path)
 
 
 def run(
@@ -136,6 +134,7 @@ def run(
     label: str | None = None,
     args: tuple[Any, ...] = (),
     kwargs: dict[str, Any] | None = None,
+    carry: dict[str, str] | None = None,
 ) -> R:
     """Run a step function as the entry point.
 
@@ -148,13 +147,25 @@ def run(
                Defaults to the function's __name__.
         args: Positional arguments for the entry function.
         kwargs: Keyword arguments for the entry function.
+        carry: `{cairn_id: stone_path}` overrides. The resolver short-circuits
+            to the given stone for each listed cairn_id — no body execution,
+            no stack consultation. This is the surgery / mocking / branching
+            primitive. The carry map is persisted into the run directory so
+            the run is reproducible.
     """
     entry_label = label or getattr(entry, "__name__", "main")
     rm = RunManager(store_path, entry_label)
     tracker = SymlinkTracker(rm, rm.sink)
+    carry_map = dict(carry or {})
+    rm.record_carry(carry_map)
+
+    # Carry is a read-overlay on the store. Hits are tagged origin="carried"
+    # by OverlayStore; the step wrapper notices and short-circuits regardless
+    # of memo. No run-level lookup logic, no parallel resolver.
+    store = OverlayStore(carry_map, rm.store) if carry_map else rm.store
 
     async def _run() -> R:
-        store_token = set_store(rm.store)
+        store_token = set_store(store)
         sink_token = set_sink(tracker)
         try:
             handle = entry(*args, **(kwargs or {}))
@@ -185,7 +196,6 @@ from .spans import SpanGraph  # noqa: E402
 __all__ = [
     "RunManager",
     "SymlinkTracker",
-    "CompositeSink",
     "run",
     "RunInfo",
     "list_runs",

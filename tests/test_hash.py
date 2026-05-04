@@ -12,7 +12,7 @@ import pytest
 from cairn.core import hash as _hash_mod
 from cairn.core.hash import (
     clear_hash_funcs,
-    compute_cache_key,
+    compute_cairn_id,
     register_hash_func,
     resolve_hashable,
 )
@@ -435,7 +435,7 @@ def test_pydantic_datetime_field():
         when: datetime
 
     e = Event(when=datetime(2026, 1, 1, 12, 0, 0))
-    key = compute_cache_key("id", "ver", {"e": e})
+    key = compute_cairn_id("id", {"e": e})
     assert isinstance(key, str) and len(key) == 64
 
 
@@ -502,23 +502,23 @@ def test_pydantic_subclass_hits_basemodel_registration():
     assert "__pydantic__" in out
 
 
-# ── compute_cache_key still works end-to-end ──
+# ── compute_cairn_id end-to-end ──
 
 
-def test_cache_key_stable():
-    k1 = compute_cache_key("id", "ver", {"a": 1, "b": [1, 2]})
-    k2 = compute_cache_key("id", "ver", {"b": [1, 2], "a": 1})
+def test_cairn_id_stable():
+    k1 = compute_cairn_id("id", {"a": 1, "b": [1, 2]})
+    k2 = compute_cairn_id("id", {"b": [1, 2], "a": 1})
     assert k1 == k2
 
 
-def test_cache_key_with_path(tmp_path: Path):
+def test_cairn_id_with_path(tmp_path: Path):
     f = tmp_path / "x"
     f.write_text("y")
-    k = compute_cache_key("id", "ver", {"f": f})
+    k = compute_cairn_id("id", {"f": f})
     assert isinstance(k, str)
     assert len(k) == 64  # sha256 hex
 
 
-def test_cache_key_rejects_unknown_type():
+def test_cairn_id_rejects_unknown_type():
     with pytest.raises(TypeError):
-        compute_cache_key("id", "ver", {"thing": _CustomThing(1)})
+        compute_cairn_id("id", {"thing": _CustomThing(1)})
