@@ -6,10 +6,14 @@ on:
   workflow_dispatch:
     inputs:
       level:
-        description: "Bump level (used to compute the next version from main)"
+        description: "Bump level (ignored if tag is set)"
         type: choice
         options: [patch, minor, major, rc]
         default: minor
+      tag:
+        description: "Existing tag to publish (e.g. v0.2.1). If set, skips bump."
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -17,7 +21,7 @@ permissions:
 jobs:
   bump:
     name: Bump version and tag
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && inputs.tag == ''
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -62,9 +66,14 @@ jobs:
           git tag "${{ steps.bump.outputs.tag }}"
           git push origin "${{ steps.bump.outputs.tag }}"
 
+      - name: Trigger publish for new tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run release.yml -f tag="${{ steps.bump.outputs.tag }}"
+
   publish:
     name: Publish to PyPI
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.tag != '')
     runs-on: ubuntu-latest
     environment:
       name: pypi
@@ -74,16 +83,27 @@ jobs:
       contents: write   # for GitHub release
 
     steps:
+      - name: Resolve tag
+        id: ref
+        run: |
+          if [[ -n "${{ inputs.tag }}" ]]; then
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.ref }}
+          ref: ${{ steps.ref.outputs.tag }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@v4
 
       - name: Verify tag matches pyproject version
+        env:
+          TAG: ${{ steps.ref.outputs.tag }}
         run: |
-          tag_version="${GITHUB_REF_NAME#v}"
+          tag_version="${TAG#v}"
           file_version="$(python3 -c 'import tomllib,pathlib;print(tomllib.loads(pathlib.Path("pyproject.toml").read_bytes())["project"]["version"])')"
           if [[ "${tag_version}" != "${file_version}" ]]; then
             echo "Tag ${tag_version} does not match pyproject ${file_version}" >&2
@@ -108,7 +128,7 @@ jobs:
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
+          tag_name: ${{ steps.ref.outputs.tag }}
           generate_release_notes: true
           files: dist/*
           fail_on_unmatched_files: true
