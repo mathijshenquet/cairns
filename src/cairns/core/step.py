@@ -338,13 +338,25 @@ async def _resolve_args(
     return resolved
 
 
-async def _gather_children(span: TaskSpan) -> None:
-    """Await any still-running child tasks, counting the wait as suspended time."""
+async def _gather_children(span: TaskSpan, *, reraise: bool = False) -> None:
+    """Await any still-running child tasks, counting the wait as suspended time.
+
+    With `reraise=True`, surface the first child exception after all siblings
+    finish — closing the structured-concurrency contract so an unawaited child
+    that raised can't be silently swallowed by a successful parent. Siblings
+    are not cancelled mid-flight; we wait for them, then raise. To model
+    expected failure inside a step, return a sentinel value rather than
+    raising (see `tests/test_resume.py::test_resume_fanout_partial_failure`).
+    """
     if not span.child_tasks:
         return
     t0 = time.monotonic()
-    await asyncio.gather(*span.child_tasks, return_exceptions=True)
+    results = await asyncio.gather(*span.child_tasks, return_exceptions=True)
     span.suspended_total += time.monotonic() - t0
+    if reraise:
+        for r in results:
+            if isinstance(r, BaseException) and not isinstance(r, asyncio.CancelledError):
+                raise r
 
 
 def _stitch_cached(span: TaskSpan, cached: Record) -> Any:
@@ -683,7 +695,7 @@ def _make_step(
 
                 emit_event("start", seq=span.seq)
                 result = await fn(**resolved)
-                await _gather_children(span)
+                await _gather_children(span, reraise=True)
                 return _publish_success(span, result, resolved, _info, store, key, tags=tags)
 
             except BaseException as exc:

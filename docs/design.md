@@ -148,12 +148,18 @@ Inside `run()` (async):
    return the cached value.
 6. Emit `start`. Run the body.
 7. After the body returns, `asyncio.gather` any remaining `child_tasks` —
-   structured concurrency, so a step never outlives its parent.
+   structured concurrency, so a step never outlives its parent. If any
+   child raised (and was never awaited, or was awaited and the exception
+   re-thrown), the first such exception is re-raised here: a parent does
+   not silently succeed over a failed child. Siblings are not cancelled;
+   we wait for all to finish before re-raising. To model expected failure,
+   return a sentinel value from the child instead of raising.
 8. Store the result (or the error, on the exception path).
 9. Emit `end` with size/time metrics.
 
 On an exception: gather children first (a fan-out failure shouldn't wipe the
-siblings still in flight), then store the error and emit `error`.
+siblings still in flight), then store the error and emit `error`. Children's
+exceptions are swallowed on this path — the parent already has its own cause.
 Cancellation is allowed to propagate fast; the cancel path emits `cancel`.
 
 ---

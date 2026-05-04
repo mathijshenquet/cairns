@@ -418,6 +418,53 @@ async def test_parent_waits_for_unawaited_children():
         assert child_span.end_ts <= parent_span.end_ts
 
 
+@pytest.mark.asyncio
+async def test_unawaited_child_failure_propagates_to_parent():
+    """A child that raises must fail its parent even when the parent never awaits it."""
+
+    @step
+    async def bad_child() -> int:
+        await asyncio.sleep(0.01)
+        raise RuntimeError("child failed")
+
+    @step
+    async def parent() -> str:
+        bad_child()  # spawned, never awaited — failure must still surface
+        return "done"
+
+    async with Harness():
+        with pytest.raises(RuntimeError, match="child failed"):
+            await parent()
+
+
+@pytest.mark.asyncio
+async def test_unawaited_child_failure_does_not_cancel_siblings():
+    """Sibling children finish before the parent re-raises the failure."""
+    sibling_completed = False
+
+    @step
+    async def slow_sibling() -> int:
+        nonlocal sibling_completed
+        await asyncio.sleep(0.05)
+        sibling_completed = True
+        return 1
+
+    @step
+    async def fast_failure() -> int:
+        raise RuntimeError("boom")
+
+    @step
+    async def parent() -> str:
+        slow_sibling()
+        fast_failure()
+        return "done"
+
+    async with Harness():
+        with pytest.raises(RuntimeError, match="boom"):
+            await parent()
+        assert sibling_completed
+
+
 # ── Identity and version ──
 
 
