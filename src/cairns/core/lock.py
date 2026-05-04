@@ -14,7 +14,7 @@ from __future__ import annotations
 import fcntl
 import os
 from contextlib import contextmanager
-from typing import Iterator
+from typing import Generator
 
 
 def _lock_path(store_path: str) -> str:
@@ -36,7 +36,7 @@ def _ensure_lockfile(store_path: str) -> str:
 
 
 @contextmanager
-def store_shared(store_path: str) -> Iterator[None]:
+def store_shared(store_path: str) -> Generator[None]:
     """Shared (reader) lock: held by each FileStore.put during publication."""
     path = _ensure_lockfile(store_path)
     fd = os.open(path, os.O_RDONLY)
@@ -51,7 +51,7 @@ def store_shared(store_path: str) -> Iterator[None]:
 
 
 @contextmanager
-def gc_exclusive(store_path: str) -> Iterator[None]:
+def gc_exclusive(store_path: str) -> Generator[None]:
     """Exclusive (writer) lock: held by gc during mark + sweep."""
     path = _ensure_lockfile(store_path)
     fd = os.open(path, os.O_RDWR)

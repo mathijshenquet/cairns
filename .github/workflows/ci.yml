@@ -32,7 +32,8 @@ jobs:
         run: uv run lint-imports
 
       - name: Type-check (pyright)
-        run: uvx pyright
+        # Run inside the synced project venv so pyright resolves pydantic etc.
+        run: uv run --with pyright pyright
 
       - name: Tests
         run: uv run pytest

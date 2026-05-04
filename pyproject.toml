@@ -65,8 +65,8 @@ asyncio_mode = "auto"
 [tool.pyright]
 pythonVersion = "3.12"
 typeCheckingMode = "strict"
-venvPath = ".devenv/state"
-venv = "venv"
+# venv auto-detected via $VIRTUAL_ENV (set by `uv run`, devenv/direnv, etc.)
+# so the same config works locally and in CI.
 include = ["src"]
 exclude = [
     "src/cairns/tui/",
