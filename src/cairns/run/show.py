@@ -194,6 +194,9 @@ def show_trace(store_path: str, run_id: str | None = None) -> None:
     runs_dir = os.path.join(store_path, "runs")
 
     if run_id is None:
+        if not os.path.isdir(runs_dir):
+            print("No runs found.")
+            return
         for entry in os.scandir(runs_dir):
             if entry.is_symlink():
                 run_id = os.readlink(entry.path)

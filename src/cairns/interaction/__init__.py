@@ -4,7 +4,9 @@ The `InteractionSink` protocol lives in `cairns.core.runtime` (it's a
 slot on the active `Run`). This module provides:
 
 - typed async wrappers (`await_input`, `await_choice`, `await_confirm`)
-  each backed by a memoized `@step`, so answers are content-addressed.
+  each backed by a `@step`, so prior answers are prefilled on resume
+  via the carry overlay. Not memoized across separate runs — the sink
+  is called fresh each fresh run.
 - built-in sinks: `QueueInteractionSink` (tests / scripted runs) and
   `StdinInteractionSink` (terminal fallback).
 
@@ -50,7 +52,7 @@ def _caller_span() -> int | None:
     return s.parent_seq if s is not None else None
 
 
-# ── Memoized internals (one @step per widget) ──
+# ── Internals (one @step per widget; carry-overlay prefills on resume) ──
 
 
 @step
@@ -97,7 +99,8 @@ async def await_input(
 ) -> str:
     """Ask a human for a free-form string.
 
-    Memoized by (prompt, default, placeholder).
+    On resume, a prior answer for the same call site is prefilled via the
+    carry overlay; on a fresh run, the sink is called.
     """
     return await _input(prompt, default, placeholder)
 
@@ -110,8 +113,8 @@ async def await_choice(
 ) -> K:
     """Ask a human to pick one of `options`; returns the chosen key.
 
-    Memoized by (prompt, options, default). Changing any key, its
-    rendered value, or the default invalidates the cache.
+    On resume, a prior answer for the same call site is prefilled via the
+    carry overlay; on a fresh run, the sink is called.
     """
     raw = await _choice(prompt, dict(options), default)
     if raw not in options:
@@ -124,7 +127,11 @@ async def await_choice(
 async def await_confirm(
     prompt: str, *, default: bool | None = None
 ) -> bool:
-    """Ask a yes/no question. Memoized by (prompt, default)."""
+    """Ask a yes/no question.
+
+    On resume, a prior answer for the same call site is prefilled via the
+    carry overlay; on a fresh run, the sink is called.
+    """
     return await _confirm(prompt, default)
 
 

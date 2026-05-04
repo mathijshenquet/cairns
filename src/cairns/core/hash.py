@@ -57,12 +57,20 @@ def resolve_hashable(
 
     if isinstance(value, dict):
         d = cast(dict[Any, Any], value)
+        for k in d:
+            if not isinstance(k, str):
+                raise TypeError(
+                    f"dict keys must be strings for cache hashing, got "
+                    f"{type(k).__name__}: {k!r}. JSON has no faithful "
+                    f"representation for non-string keys; stringify them "
+                    f"explicitly or wrap the value in a Pydantic model."
+                )
         _seen[vid] = True
         try:
             return {
                 "__dict__": {
-                    str(k): resolve_hashable(d[k], _seen, hash_funcs)
-                    for k in sorted(d, key=lambda x: str(x))
+                    k: resolve_hashable(d[k], _seen, hash_funcs)
+                    for k in sorted(d)
                 }
             }
         finally:
@@ -145,9 +153,12 @@ def _hash_partial(p: "functools.partial[Any]") -> Any:
     # also respects @step's attached `.info` (including user overrides).
     from .types import StepInfo
 
+    info = StepInfo.from_function(p.func)
     return {
         "__partial__": {
-            "func": StepInfo.from_function(p.func).version,
+            "name": info.name,
+            "body_hash": info.body_hash,
+            "version": info.version,
             "args": [resolve_hashable(a) for a in p.args],
             "keywords": {k: resolve_hashable(v) for k, v in p.keywords.items()},
         }

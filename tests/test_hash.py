@@ -111,17 +111,30 @@ def _helper_with_kw(*, target: object) -> object:
     return target
 
 
+def _other_helper_fn(a: int) -> int:
+    return a * 2
+
+
 def test_partial_hash_round_trips():
     p = functools.partial(_helper_fn, 5)
     out = resolve_hashable(p)
     assert "__partial__" in out
     assert out["__partial__"]["args"] == [5]
-    assert "func" in out["__partial__"]
+    assert "body_hash" in out["__partial__"]
 
 
 def test_partial_invalidates_on_bound_arg_change():
     p1 = functools.partial(_helper_fn, 5)
     p2 = functools.partial(_helper_fn, 10)
+    assert resolve_hashable(p1) != resolve_hashable(p2)
+
+
+def test_partial_distinguishes_different_wrapped_functions():
+    # Regression: previously _hash_partial only stored StepInfo.version, which
+    # is None for unversioned functions, so two partials wrapping different
+    # bodies hashed identically.
+    p1 = functools.partial(_helper_fn, 5)
+    p2 = functools.partial(_other_helper_fn, 5)
     assert resolve_hashable(p1) != resolve_hashable(p2)
 
 
@@ -147,6 +160,16 @@ class _CustomThing:
 def test_unknown_type_raises():
     with pytest.raises(TypeError, match="Unhashable type"):
         resolve_hashable(_CustomThing(1))
+
+
+def test_non_string_dict_keys_raise():
+    # Regression: previously str(k) silently coerced int/float keys, so
+    # {1: "a"} and {"1": "a"} hashed identically and {1: ..., "1": ...}
+    # collapsed.
+    with pytest.raises(TypeError, match="dict keys must be strings"):
+        resolve_hashable({1: "a"})
+    with pytest.raises(TypeError, match="dict keys must be strings"):
+        resolve_hashable({"outer": {2: "nested"}})
 
 
 def test_registered_type_works():

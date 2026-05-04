@@ -96,7 +96,14 @@ def to_jsonable(value: Any) -> Any:
         mapping = cast(dict[Any, Any], value)
         out: dict[str, Any] = {}
         for k, v in mapping.items():
-            out[str(k)] = to_jsonable(v)
+            if not isinstance(k, str):
+                raise TypeError(
+                    f"dict keys must be strings for serialization, got "
+                    f"{type(k).__name__}: {k!r}. JSON has no faithful "
+                    f"representation for non-string keys; stringify them "
+                    f"explicitly or wrap the value in a Pydantic model."
+                )
+            out[k] = to_jsonable(v)
         return out
     return value
 

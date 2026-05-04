@@ -88,6 +88,17 @@ def test_unregistered_type_falls_through_to_json(tmp_path: Path) -> None:
     assert r2 == r1
 
 
+def test_non_string_dict_keys_raise() -> None:
+    # Regression: previously str(k) silently coerced non-string keys, so
+    # {1: "int", "1": "str"} round-tripped as {"1": "str"}.
+    from cairns.core.serial import to_jsonable
+
+    with pytest.raises(TypeError, match="dict keys must be strings"):
+        to_jsonable({1: "int", "1": "str"})
+    with pytest.raises(TypeError, match="dict keys must be strings"):
+        to_jsonable({"outer": {2: "nested"}})
+
+
 def test_missing_serializer_raises_on_read() -> None:
     """Reading a record whose tag has no registered serializer raises clearly."""
     from cairns.core.runtime import default_runtime
