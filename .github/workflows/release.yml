@@ -1,0 +1,114 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      level:
+        description: "Bump level (used to compute the next version from main)"
+        type: choice
+        options: [patch, minor, major, rc]
+        default: minor
+
+permissions:
+  contents: read
+
+jobs:
+  bump:
+    name: Bump version and tag
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: cairns-release-main
+      cancel-in-progress: false
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Compute and apply next version
+        id: bump
+        run: |
+          version="$(uv run scripts/release_version.py print-next --level ${{ inputs.level }})"
+          uv run scripts/release_version.py set "${version}"
+          uv lock
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Reject if tag already exists
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/${{ steps.bump.outputs.tag }}" >/dev/null 2>&1; then
+            echo "Tag ${{ steps.bump.outputs.tag }} already exists." >&2
+            exit 1
+          fi
+
+      - name: Commit, tag, and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if ! git diff --quiet -- pyproject.toml uv.lock; then
+            git add pyproject.toml uv.lock
+            git commit -m "Release ${{ steps.bump.outputs.tag }} [skip ci]"
+            git push origin HEAD:main
+          fi
+          git tag "${{ steps.bump.outputs.tag }}"
+          git push origin "${{ steps.bump.outputs.tag }}"
+
+  publish:
+    name: Publish to PyPI
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/cairns/
+    permissions:
+      id-token: write   # OIDC for PyPI trusted publishing
+      contents: write   # for GitHub release
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Verify tag matches pyproject version
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          file_version="$(python3 -c 'import tomllib,pathlib;print(tomllib.loads(pathlib.Path("pyproject.toml").read_bytes())["project"]["version"])')"
+          if [[ "${tag_version}" != "${file_version}" ]]; then
+            echo "Tag ${tag_version} does not match pyproject ${file_version}" >&2
+            exit 1
+          fi
+
+      - name: Sync dev environment
+        run: uv sync --extra dev
+
+      - name: Tests
+        run: uv run pytest
+
+      - name: Build
+        run: uv build
+
+      - name: twine check
+        run: uvx twine check dist/*
+
+      - name: Publish to PyPI (trusted publishing)
+        run: uv publish --trusted-publishing always
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: dist/*
+          fail_on_unmatched_files: true
