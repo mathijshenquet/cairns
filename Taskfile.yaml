@@ -1,5 +1,7 @@
 version: "3"
 
+dotenv: [".env"]
+
 tasks:
   build:
     desc: Build sdist + wheel into dist/
@@ -14,11 +16,11 @@ tasks:
       - uvx twine check dist/*
 
   publish:
-    desc: Publish to PyPI. Reads $PYPI_TOKEN from env (loaded from .env via devenv).
+    desc: Publish to PyPI. Reads $PYPI_TOKEN from .env.
     deps: [check]
     preconditions:
       - sh: 'test -n "$PYPI_TOKEN"'
-        msg: "PYPI_TOKEN is not set. Add it to .env (devenv auto-loads dotenv)."
+        msg: "PYPI_TOKEN is not set in .env."
     cmds:
       - UV_PUBLISH_TOKEN="$PYPI_TOKEN" uv publish
 
