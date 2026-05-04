@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import pytest
 
-from cairns import step, trace, cached_output, cached_tracing, Handle
+from cairns import Cairn, step, trace, cached_output, cached_tracing, Handle
 from cairns.testing import Harness
 
 
@@ -531,6 +531,97 @@ async def test_memo_predicate_falls_through_to_execute():
         # fails to match, so we execute again.
         assert await compute(5) == 6
         assert call_count == 2
+
+
+# ── Cairn.latest() filters ──
+
+
+async def _stack_versions(versions: tuple[str, ...]) -> Cairn:
+    """Seed one cairn_id (identity='emit', no args) with one record per version."""
+    for ver in versions:
+        captured = ver
+
+        async def _seed() -> str:
+            return captured  # noqa: B023 — closure capture is intentional
+
+        s = step(_seed, memo=False, identity="emit", version=ver)
+        await s()
+
+    @step(identity="emit")
+    async def picker() -> str:
+        return ""
+
+    return picker.cairn()
+
+
+@pytest.mark.asyncio
+async def test_latest_version_filter_picks_matching_record():
+    """latest(version=...) returns the newest record whose version matches.
+
+    Regression pin: a prior revision had `pass` here and silently returned
+    the newest record regardless of version.
+    """
+    async with Harness():
+        cairn = await _stack_versions(("v1", "v2", "v3"))
+
+        rec = cairn.latest(version="v2")
+        assert rec is not None
+        assert rec.version == "v2"
+        assert rec.result == "v2"
+
+
+@pytest.mark.asyncio
+async def test_latest_version_filter_no_match_returns_none():
+    """latest(version=...) returns None when no record carries that version."""
+    async with Harness():
+        cairn = await _stack_versions(("v1", "v2"))
+
+        assert cairn.latest(version="v9") is None
+
+
+@pytest.mark.asyncio
+async def test_latest_version_filter_skips_newer_mismatching_records():
+    """latest(version='v1') returns v1 even though v2 / v3 are newer."""
+    async with Harness():
+        cairn = await _stack_versions(("v1", "v2", "v3"))
+
+        rec = cairn.latest(version="v1")
+        assert rec is not None
+        assert rec.version == "v1"
+
+
+@pytest.mark.asyncio
+async def test_latest_no_filter_returns_newest_non_errored():
+    """latest() with no filter returns the newest record."""
+    async with Harness():
+        cairn = await _stack_versions(("v1", "v2", "v3"))
+
+        rec = cairn.latest()
+        assert rec is not None
+        assert rec.version == "v3"
+
+
+@pytest.mark.asyncio
+async def test_latest_body_hash_filter():
+    """latest(body_hash=...) filters on Record.body_hash."""
+
+    @step(memo=False, identity="emitter", body_hash="hash-a")
+    async def emit_a() -> str:
+        return "a"
+
+    @step(memo=False, identity="emitter", body_hash="hash-b")
+    async def emit_b() -> str:
+        return "b"
+
+    async with Harness():
+        await emit_a()
+        await emit_b()
+
+        cairn = emit_a.cairn()
+        rec = cairn.latest(body_hash="hash-a")
+        assert rec is not None
+        assert rec.body_hash == "hash-a"
+        assert rec.result == "a"
 
 
 # ── Edge annotations ──
