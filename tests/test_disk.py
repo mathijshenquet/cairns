@@ -12,7 +12,7 @@ from cairns import step, run, trace
 
 def test_run_creates_disk_layout(tmp_path: Path) -> None:
     """run() creates store/ + cairns/ + runs/ with the record layout."""
-    store_path = str(tmp_path / ".cairn")
+    store_path = str(tmp_path / ".cairns")
 
     @step
     async def greet(name: str) -> str:
@@ -23,7 +23,7 @@ def test_run_creates_disk_layout(tmp_path: Path) -> None:
     assert result == "hello world"
 
     # Value-bytes CAS holds a {"result": ...} payload, nothing else.
-    store = tmp_path / ".cairn" / "store"
+    store = tmp_path / ".cairns" / "store"
     assert store.is_dir()
     store_files = list(store.glob("*.json"))
     assert len(store_files) >= 1
@@ -33,7 +33,7 @@ def test_run_creates_disk_layout(tmp_path: Path) -> None:
     assert payload["result"] == "hello world"
 
     # Cairn holds records; each record has metadata + events + result symlink.
-    cairns = tmp_path / ".cairn" / "cairns"
+    cairns = tmp_path / ".cairns" / "cairns"
     assert cairns.is_dir()
     records = [p for p in cairns.glob("*/*") if p.is_dir()]
     assert records
@@ -43,7 +43,7 @@ def test_run_creates_disk_layout(tmp_path: Path) -> None:
     assert (record / "result").exists()
 
     # The merged run trace is still on disk.
-    runs = tmp_path / ".cairn" / "runs"
+    runs = tmp_path / ".cairns" / "runs"
     run_dirs = [d for d in runs.iterdir() if d.is_dir() and d.name.startswith("greet-")]
     assert len(run_dirs) == 1
     trace_file = run_dirs[0] / "trace.jsonl"
@@ -56,7 +56,7 @@ def test_run_creates_disk_layout(tmp_path: Path) -> None:
 
 def test_run_creates_step_symlinks(tmp_path: Path) -> None:
     """run() creates ordered step symlinks under runs/*/steps/ pointing at records."""
-    store_path = str(tmp_path / ".cairn")
+    store_path = str(tmp_path / ".cairns")
 
     @step
     async def add(a: int, b: int) -> int:
@@ -65,7 +65,7 @@ def test_run_creates_step_symlinks(tmp_path: Path) -> None:
     result = run(add, store_path=store_path, args=(1, 2))
     assert result == 3
 
-    runs = tmp_path / ".cairn" / "runs"
+    runs = tmp_path / ".cairns" / "runs"
     run_dirs = [d for d in runs.iterdir() if d.is_dir() and d.name.startswith("add-")]
     assert len(run_dirs) == 1
     steps = run_dirs[0] / "steps"
@@ -82,7 +82,7 @@ def test_run_creates_step_symlinks(tmp_path: Path) -> None:
 
 def test_run_creates_gc_root_symlink(tmp_path: Path) -> None:
     """run() maintains a GC root symlink for the entry point."""
-    store_path = str(tmp_path / ".cairn")
+    store_path = str(tmp_path / ".cairns")
 
     @step
     async def compute() -> int:
@@ -90,14 +90,14 @@ def test_run_creates_gc_root_symlink(tmp_path: Path) -> None:
 
     run(compute, store_path=store_path)
 
-    gc_root = tmp_path / ".cairn" / "runs" / "compute"
+    gc_root = tmp_path / ".cairns" / "runs" / "compute"
     assert gc_root.is_symlink()
     assert (gc_root / "trace.jsonl").exists()
 
 
 def test_run_caches_across_runs(tmp_path: Path) -> None:
     """Second run() reuses cached outputs from first run."""
-    store_path = str(tmp_path / ".cairn")
+    store_path = str(tmp_path / ".cairns")
     call_count = 0
 
     @step(memo=True)
@@ -117,7 +117,7 @@ def test_run_caches_across_runs(tmp_path: Path) -> None:
 
 def test_run_with_fanout(tmp_path: Path) -> None:
     """run() handles fan-out correctly on disk."""
-    store_path = str(tmp_path / ".cairn")
+    store_path = str(tmp_path / ".cairns")
 
     @step
     async def double(x: int) -> int:
@@ -131,10 +131,10 @@ def test_run_with_fanout(tmp_path: Path) -> None:
     result = run(pipeline, store_path=store_path)
     assert result == [0, 2, 4]
 
-    store_files = list((tmp_path / ".cairn" / "store").glob("*.json"))
+    store_files = list((tmp_path / ".cairns" / "store").glob("*.json"))
     assert len(store_files) >= 3  # at least one CAS entry per distinct value
 
-    runs = tmp_path / ".cairn" / "runs"
+    runs = tmp_path / ".cairns" / "runs"
     run_dirs = [d for d in runs.iterdir() if d.is_dir() and d.name.startswith("pipeline-")]
     steps = run_dirs[0] / "steps"
     symlinks = [f for f in steps.iterdir() if f.is_symlink()]
@@ -143,7 +143,7 @@ def test_run_with_fanout(tmp_path: Path) -> None:
 
 def test_cairn_stone_layout_and_recalled_subtree(tmp_path: Path) -> None:
     """Runs publish immutable records; cache hits replay child record spans."""
-    store_path = str(tmp_path / ".cairn")
+    store_path = str(tmp_path / ".cairns")
     calls: dict[str, int] = {"leaf": 0, "root": 0}
 
     @step(memo=True)
@@ -161,7 +161,7 @@ def test_cairn_stone_layout_and_recalled_subtree(tmp_path: Path) -> None:
     assert run(root, store_path=store_path) == "leaf"
     assert calls == {"leaf": 1, "root": 1}
 
-    cairns = tmp_path / ".cairn" / "cairns"
+    cairns = tmp_path / ".cairns" / "cairns"
     records = [p for p in cairns.glob("*/*") if p.is_dir()]
     assert records
     assert all((s / "metadata.json").exists() and (s / "events.jsonl").exists() for s in records)
@@ -182,7 +182,7 @@ def test_cairn_stone_layout_and_recalled_subtree(tmp_path: Path) -> None:
     assert root_spawn_events[0]["child_index"] == 0
 
     # Recalled-subtree replay emits a spawn for the child under the recalled parent.
-    runs = sorted([d for d in (tmp_path / ".cairn" / "runs").iterdir() if d.is_dir() and d.name.startswith("root-")])
+    runs = sorted([d for d in (tmp_path / ".cairns" / "runs").iterdir() if d.is_dir() and d.name.startswith("root-")])
     with open(runs[-1] / "trace.jsonl", "r") as f:
         events = [json.loads(line) for line in f if line.strip()]
     assert any(e["e"] == "end" and e.get("cached") for e in events)
@@ -191,7 +191,7 @@ def test_cairn_stone_layout_and_recalled_subtree(tmp_path: Path) -> None:
 
 def test_version_mismatch_forces_fresh_stone(tmp_path: Path) -> None:
     """A stored record at version A is not recalled when the current version is B."""
-    store_path = str(tmp_path / ".cairn")
+    store_path = str(tmp_path / ".cairns")
     calls = {"n": 0}
 
     @step(memo=True, identity="pkg.compute", version="v1")
@@ -212,7 +212,7 @@ def test_version_mismatch_forces_fresh_stone(tmp_path: Path) -> None:
     assert calls == {"n": 2}
 
     # Both versions sit in the same cairn (cairn_id excludes version).
-    cairns = tmp_path / ".cairn" / "cairns"
+    cairns = tmp_path / ".cairns" / "cairns"
     cairn_dirs = [p for p in cairns.iterdir() if p.is_dir()]
     assert len(cairn_dirs) == 1
     record_ids = [s.name for s in cairn_dirs[0].iterdir() if s.is_dir()]
@@ -221,7 +221,7 @@ def test_version_mismatch_forces_fresh_stone(tmp_path: Path) -> None:
 
 def test_carry_overrides_resolver(tmp_path: Path) -> None:
     """run(carry={...}) short-circuits to the pinned record without executing."""
-    store_path = str(tmp_path / ".cairn")
+    store_path = str(tmp_path / ".cairns")
     calls = {"n": 0}
 
     @step(memo=True)
@@ -237,7 +237,7 @@ def test_carry_overrides_resolver(tmp_path: Path) -> None:
     cairn_id_a = info.cairn_id({"tag": "A"})
     cairn_id_b = info.cairn_id({"tag": "B"})
 
-    stones_a = list((tmp_path / ".cairn" / "cairns" / cairn_id_a).iterdir())
+    stones_a = list((tmp_path / ".cairns" / "cairns" / cairn_id_a).iterdir())
     assert len(stones_a) == 1
     record_path = str(stones_a[0])
 
@@ -248,7 +248,7 @@ def test_carry_overrides_resolver(tmp_path: Path) -> None:
     assert calls == {"n": 1}  # still no new body execution
 
     # The carry map was persisted into the run dir.
-    run_dirs = sorted(d for d in (tmp_path / ".cairn" / "runs").iterdir() if d.is_dir() and d.name.startswith("pick-"))
+    run_dirs = sorted(d for d in (tmp_path / ".cairns" / "runs").iterdir() if d.is_dir() and d.name.startswith("pick-"))
     carry_file = run_dirs[-1] / "carry.json"
     assert carry_file.exists()
     import json as _json
@@ -268,7 +268,7 @@ def test_carry_overrides_resolver(tmp_path: Path) -> None:
 
 def test_error_stones_keep_trace_events(tmp_path: Path) -> None:
     """Error records preserve traces in events.jsonl for later inspection."""
-    store_path = str(tmp_path / ".cairn")
+    store_path = str(tmp_path / ".cairns")
 
     @step
     async def fail() -> str:
@@ -278,7 +278,7 @@ def test_error_stones_keep_trace_events(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError):
         run(fail, store_path=store_path)
 
-    records = [p for p in (tmp_path / ".cairn" / "cairns").glob("*/*") if p.is_dir()]
+    records = [p for p in (tmp_path / ".cairns" / "cairns").glob("*/*") if p.is_dir()]
     fail_stone = next(s for s in records if json.loads((s / "metadata.json").read_text()).get("short_name") == "fail")
     meta = json.loads((fail_stone / "metadata.json").read_text())
     assert meta["error"] == "boom"
@@ -294,7 +294,7 @@ def test_error_stones_keep_trace_events(tmp_path: Path) -> None:
 def test_cached_flamegraph_reconstructs_original_timing(tmp_path: Path) -> None:
     """A cache-hit span's trace reconstructs child spans + traces at original offsets."""
     import asyncio
-    store_path = str(tmp_path / ".cairn")
+    store_path = str(tmp_path / ".cairns")
 
     @step(memo=True)
     async def child(x: int) -> int:
@@ -310,7 +310,7 @@ def test_cached_flamegraph_reconstructs_original_timing(tmp_path: Path) -> None:
 
     # First run: populate the cache with real timings.
     run(parent, store_path=store_path)
-    first_runs = sorted(d for d in (tmp_path / ".cairn" / "runs").iterdir() if d.is_dir() and d.name.startswith("parent-"))
+    first_runs = sorted(d for d in (tmp_path / ".cairns" / "runs").iterdir() if d.is_dir() and d.name.startswith("parent-"))
     first_trace = first_runs[-1] / "trace.jsonl"
     with open(first_trace, "r") as f:
         first_events = [json.loads(line) for line in f if line.strip()]
@@ -321,7 +321,7 @@ def test_cached_flamegraph_reconstructs_original_timing(tmp_path: Path) -> None:
     # Second run: cache hit on parent. Replayed subtree should carry virtual
     # timing consistent with original durations.
     run(parent, store_path=store_path)
-    second_runs = sorted(d for d in (tmp_path / ".cairn" / "runs").iterdir() if d.is_dir() and d.name.startswith("parent-"))
+    second_runs = sorted(d for d in (tmp_path / ".cairns" / "runs").iterdir() if d.is_dir() and d.name.startswith("parent-"))
     second_trace = second_runs[-1] / "trace.jsonl"
     with open(second_trace, "r") as f:
         second_events = [json.loads(line) for line in f if line.strip()]
@@ -361,7 +361,7 @@ def test_cached_child_replay_does_not_make_parent_time_go_backwards(tmp_path: Pa
     """Awaiting a cached child should not emit later parent events in the past."""
     import asyncio
 
-    store_path = str(tmp_path / ".cairn")
+    store_path = str(tmp_path / ".cairns")
 
     @step(memo=True)
     async def child() -> int:
@@ -380,7 +380,7 @@ def test_cached_child_replay_does_not_make_parent_time_go_backwards(tmp_path: Pa
     run(parent, store_path=store_path)
 
     runs = sorted(
-        d for d in (tmp_path / ".cairn" / "runs").iterdir()
+        d for d in (tmp_path / ".cairns" / "runs").iterdir()
         if d.is_dir() and d.name.startswith("parent-")
     )
     with open(runs[-1] / "trace.jsonl", "r") as f:
@@ -401,7 +401,7 @@ def test_cached_child_replay_does_not_make_parent_time_go_backwards(tmp_path: Pa
 
 def test_subtree_integrity_skips_stones_with_missing_children(tmp_path: Path) -> None:
     """A parent record whose child record was GC'd is skipped on recall."""
-    store_path = str(tmp_path / ".cairn")
+    store_path = str(tmp_path / ".cairns")
     calls = {"parent": 0, "child": 0}
 
     @step(memo=True)
@@ -418,7 +418,7 @@ def test_subtree_integrity_skips_stones_with_missing_children(tmp_path: Path) ->
     assert calls == {"parent": 1, "child": 1}
 
     # Nuke the child record, leaving the parent's children/000 pointer dangling.
-    cairns = tmp_path / ".cairn" / "cairns"
+    cairns = tmp_path / ".cairns" / "cairns"
     for cairn_dir in cairns.iterdir():
         for stone_dir in cairn_dir.iterdir():
             meta = json.loads((stone_dir / "metadata.json").read_text())

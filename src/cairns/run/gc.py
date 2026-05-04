@@ -150,7 +150,7 @@ def remove_runs_before(
     """Remove runs older than a given datetime.
 
     Args:
-        store_path: Path to the .cairn directory.
+        store_path: Path to the .cairns directory.
         before: Remove runs with timestamps before this datetime.
         keep_latest: If True, never remove runs that are the 'latest' for their entry point.
 
@@ -250,7 +250,7 @@ def gc(
     """Full garbage collection: remove old runs, then sweep orphaned outputs.
 
     Args:
-        store_path: Path to the .cairn directory.
+        store_path: Path to the .cairns directory.
         before: If given, remove runs older than this. If None, don't remove any runs
                 (only gc orphaned outputs).
         keep_latest: If True, never remove the latest run for each entry point.

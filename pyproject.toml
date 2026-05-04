@@ -2,22 +2,45 @@
 name = "cairns"
 version = "0.2.0"
 description = "Compute graph orchestration with caching and observability"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.12"
+authors = [{ name = "Mathijs Henquet", email = "mathijs.henquet@gmail.com" }]
+keywords = [
+    "compute-graph",
+    "caching",
+    "tracing",
+    "observability",
+    "pipeline",
+    "workflow",
+    "async",
+    "agents",
+    "llm",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: System :: Distributed Computing",
+    "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://github.com/mathijshenquet/cairns"
+Repository = "https://github.com/mathijshenquet/cairns"
+Issues = "https://github.com/mathijshenquet/cairns/issues"
 
 [project.optional-dependencies]
-pydantic = [
-    "pydantic>=2.0"
-]
-tui = [
-    "textual>=3.0",
-    "rich>=13.0"
-]
-semver = [
-    "semver>=3.0"
-]
-full = [
-    "cairns[tui,pydantic]"
-]
+pydantic = ["pydantic>=2.0"]
+tui = ["textual>=3.0", "rich>=13.0"]
+semver = ["semver>=3.0"]
+full = ["cairns[tui,pydantic]"]
 dev = [
     "cairns[full]",
     "pytest>=8.0",
@@ -44,7 +67,18 @@ pythonVersion = "3.12"
 typeCheckingMode = "strict"
 venvPath = ".devenv/state"
 venv = "venv"
-exclude = ["src/cairns/tui/"]
+include = ["src"]
+exclude = [
+    "src/cairns/tui/",
+    "**/__pycache__",
+    "**/.venv",
+    "**/.devenv",
+    "**/.direnv",
+    "**/dist",
+    "**/build",
+    "**/.cairn",
+    "**/.cairns",
+]
 
 [tool.importlinter]
 root_packages = ["cairns"]
@@ -58,4 +92,9 @@ layers = [
     "cairns.run",
     "cairns.interaction",
     "cairns.core",
+]
+# `Runtime` exposes `.run()` / `.arun()` as a thin facade that delegates into
+# `cairns.run` (lazy imports avoid import-time cycle). Whitelist those edges.
+ignore_imports = [
+    "cairns.core.runtime -> cairns.run",
 ]

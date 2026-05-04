@@ -96,7 +96,7 @@ if __name__ == "__main__":
 
     print("First run (fetches all pages)...")
     t0 = time.monotonic()
-    products = run(main, store_path=".cairn")
+    products = run(main, store_path=".cairns")
     t1 = time.monotonic()
     print(f"  {len(products)} products scraped in {t1 - t0:.2f}s\n")
 
@@ -105,6 +105,6 @@ if __name__ == "__main__":
 
     print("\nSecond run (fully cached)...")
     t0 = time.monotonic()
-    products2 = run(main, store_path=".cairn")
+    products2 = run(main, store_path=".cairns")
     t1 = time.monotonic()
     print(f"  {len(products2)} products in {t1 - t0:.3f}s (cached)")

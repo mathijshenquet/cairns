@@ -1,0 +1,26 @@
+version: "3"
+
+tasks:
+  build:
+    desc: Build sdist + wheel into dist/
+    cmds:
+      - rm -rf dist/
+      - uv build
+
+  check:
+    desc: Validate built artifacts (twine check)
+    deps: [build]
+    cmds:
+      - uvx twine check dist/*
+
+  publish:
+    desc: Publish to PyPI. Token must be in macOS Keychain (`uvx keyring set https://upload.pypi.org/legacy/ __token__`).
+    deps: [check]
+    cmds:
+      - uv publish --username __token__
+
+  publish:test:
+    desc: Publish to TestPyPI. Token in keyring under https://test.pypi.org/legacy/.
+    deps: [check]
+    cmds:
+      - uv publish --publish-url https://test.pypi.org/legacy/ --username __token__

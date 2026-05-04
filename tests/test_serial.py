@@ -28,7 +28,7 @@ class Wrapped(BaseModel):
 
 def test_pydantic_roundtrips_through_cache(tmp_path: Path) -> None:
     """A @step that returns a pydantic model returns the same model on cache hit."""
-    store_path = str(tmp_path / ".cairn")
+    store_path = str(tmp_path / ".cairns")
 
     @step(memo=True)
     async def analyze() -> Analysis:
@@ -46,7 +46,7 @@ def test_pydantic_roundtrips_through_cache(tmp_path: Path) -> None:
 
 def test_nested_pydantic_roundtrips(tmp_path: Path) -> None:
     """Pydantic-in-pydantic survives the round-trip."""
-    store_path = str(tmp_path / ".cairn")
+    store_path = str(tmp_path / ".cairns")
 
     @step(memo=True)
     async def wrap() -> Wrapped:
@@ -61,7 +61,7 @@ def test_nested_pydantic_roundtrips(tmp_path: Path) -> None:
 
 def test_tuple_distinct_from_list(tmp_path: Path) -> None:
     """Tuples round-trip as tuples, not lists."""
-    store_path = str(tmp_path / ".cairn")
+    store_path = str(tmp_path / ".cairns")
 
     @step(memo=True)
     async def pair() -> tuple[int, int]:
@@ -76,7 +76,7 @@ def test_tuple_distinct_from_list(tmp_path: Path) -> None:
 
 def test_unregistered_type_falls_through_to_json(tmp_path: Path) -> None:
     """Plain JSON-native values still work with no serializer in play."""
-    store_path = str(tmp_path / ".cairn")
+    store_path = str(tmp_path / ".cairns")
 
     @step(memo=True)
     async def produce() -> dict[str, Any]:
@@ -106,7 +106,7 @@ def test_missing_serializer_raises_on_read() -> None:
 
 def test_list_of_pydantic_models(tmp_path: Path) -> None:
     """Lists containing pydantic models are walked and tagged per-element."""
-    store_path = str(tmp_path / ".cairn")
+    store_path = str(tmp_path / ".cairns")
 
     @step(memo=True)
     async def batch() -> list[Item]:

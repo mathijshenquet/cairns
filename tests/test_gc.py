@@ -32,7 +32,7 @@ def _stone_dirs(store_path: str) -> list[str]:
 
 def _make_runs(tmp_path: Path, n: int = 3) -> str:
     """Helper: create n runs of a simple pipeline."""
-    store_path = str(tmp_path / ".cairn")
+    store_path = str(tmp_path / ".cairns")
 
     @step
     async def work(x: int) -> int:
@@ -61,7 +61,7 @@ def test_list_runs(tmp_path: Path) -> None:
 
 def test_list_runs_empty(tmp_path: Path) -> None:
     """list_runs() on empty store returns empty list."""
-    assert list_runs(str(tmp_path / ".cairn")) == []
+    assert list_runs(str(tmp_path / ".cairns")) == []
 
 
 def test_remove_run(tmp_path: Path) -> None:
@@ -80,7 +80,7 @@ def test_remove_run(tmp_path: Path) -> None:
 
 def test_remove_run_nonexistent(tmp_path: Path) -> None:
     """remove_run() returns False for nonexistent run."""
-    store_path = str(tmp_path / ".cairn")
+    store_path = str(tmp_path / ".cairns")
     assert not remove_run(store_path, "nonexistent-run")
 
 
@@ -162,7 +162,7 @@ def test_gc_full_cycle(tmp_path: Path) -> None:
 
 def test_gc_with_shared_outputs(tmp_path: Path) -> None:
     """CAS entries shared between runs survive until all referring runs are gone."""
-    store_path = str(tmp_path / ".cairn")
+    store_path = str(tmp_path / ".cairns")
 
     @step(memo=True)
     async def constant() -> str:
@@ -213,7 +213,7 @@ def test_gc_removes_unreachable_stones(tmp_path: Path) -> None:
 
 def test_list_runs_multiple_entry_points(tmp_path: Path) -> None:
     """list_runs() works with multiple different entry points."""
-    store_path = str(tmp_path / ".cairn")
+    store_path = str(tmp_path / ".cairns")
 
     @step
     async def pipeline_a() -> str:

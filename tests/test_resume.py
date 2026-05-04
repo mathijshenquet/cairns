@@ -13,7 +13,7 @@ from cairns import step, run, trace
 
 def test_resume_after_failure(tmp_path: Path) -> None:
     """Rerun after failure skips completed steps."""
-    store_path = str(tmp_path / ".cairn")
+    store_path = str(tmp_path / ".cairns")
     call_counts: dict[str, int] = {}
     should_fail = True
 
@@ -62,7 +62,7 @@ def test_resume_after_failure(tmp_path: Path) -> None:
 
 def test_resume_fanout_partial_failure(tmp_path: Path) -> None:
     """Fan-out where some tasks fail — errors handled inside child, only failures rerun."""
-    store_path = str(tmp_path / ".cairn")
+    store_path = str(tmp_path / ".cairns")
     call_counts: dict[int, int] = {}
     fail_indices: set[int] = {2, 4}
 
@@ -97,7 +97,7 @@ def test_resume_fanout_partial_failure(tmp_path: Path) -> None:
 
 def test_resume_preserves_trace(tmp_path: Path) -> None:
     """Resumed run still writes a complete trace."""
-    store_path = str(tmp_path / ".cairn")
+    store_path = str(tmp_path / ".cairns")
     should_fail = True
 
     @step(memo=True)
@@ -126,7 +126,7 @@ def test_resume_preserves_trace(tmp_path: Path) -> None:
     run(pipeline, store_path=store_path)
 
     # Should have two run directories
-    runs_dir = tmp_path / ".cairn" / "runs"
+    runs_dir = tmp_path / ".cairns" / "runs"
     run_dirs = sorted(
         [d for d in runs_dir.iterdir() if d.is_dir() and d.name.startswith("pipeline-")]
     )

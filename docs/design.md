@@ -20,8 +20,8 @@ frameworks, read [`patterns.md`](patterns.md).
 Everything else — retries, validation loops, fan-out/fan-in — is ordinary
 Python built on top of these.
 
-Entry points: `cairn.run(fn, store_path=".cairn")` programmatically, or
-`cairn script.py` from the shell.
+Entry points: `cairns.run(fn, store_path=".cairns")` programmatically, or
+`cairns script.py` from the shell.
 
 ---
 
@@ -321,7 +321,7 @@ Programmatic:
 ```python
 from cairn import run
 
-result = run(pipeline, store_path=".cairn", args=(arg1,), kwargs={"k": v})
+result = run(pipeline, store_path=".cairns", args=(arg1,), kwargs={"k": v})
 ```
 
 `run()` spins up an event loop, creates a `RunManager` (output store + trace

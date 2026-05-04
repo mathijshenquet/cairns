@@ -42,7 +42,7 @@ a reader who only cares about the cairn idea can stop after the GC section.
 ## On-disk layout
 
 ```
-.cairn/
+.cairns/
   cairns/{cairn_id}/                   # one dir per computation (identity, args)
     {record_uuid}/                      # one dir per execution; uuid7, chronological
       metadata.json                    # version, duration, size, origin, ast_hash, *_repr, ts
@@ -349,9 +349,9 @@ cairn checkout <hash | cairn_id | cairn_id:record_id> <target-path>
 Two things happen atomically:
 
 1. `<target-path>` is created as a symlink into
-   `.cairn/store/{content_hash}` (or a copy / hardlink, depending on
+   `.cairns/store/{content_hash}` (or a copy / hardlink, depending on
    flags).
-2. An indirect root is placed at `.cairn/checkouts/auto/{id} → <absolute
+2. An indirect root is placed at `.cairns/checkouts/auto/{id} → <absolute
    target path>`. The id is derived from the canonicalized absolute
    target path so re-checkout to the same target is idempotent.
 
@@ -362,7 +362,7 @@ the store path becomes collectable. No manual pin command needed.
 
 ## GC
 
-One algorithm, one mechanism: walk `.cairn/` once, follow symlinks from
+One algorithm, one mechanism: walk `.cairns/` once, follow symlinks from
 known roots, mark reachable, delete the rest.
 
 **Root classes.** Two, both at known locations:
@@ -371,7 +371,7 @@ known roots, mark reachable, delete the rest.
   run dir). Keep the latest run of every entry alive by default; `cairn
   gc --before <date>` or explicit run deletion narrows this.
 - `checkouts/auto/{id}` indirect roots. Each dereferences to an external
-  path; if that external symlink still resolves into `.cairn/store/`,
+  path; if that external symlink still resolves into `.cairns/store/`,
   mark its target live. If not, drop the indirect root.
 
 **Mark phase.**
@@ -400,7 +400,7 @@ change. Keep-policies are not automatically transitive — a record kept by
 historical subtree integrity, pair keep-policies with L0-prune-only
 (Appendix A) so structure survives even when bytes are released.
 
-**Concurrent runs.** A GC lock (`.cairn/gc.lock`) is taken for mark +
+**Concurrent runs.** A GC lock (`.cairns/gc.lock`) is taken for mark +
 sweep. Runs attempting to publish records wait for the lock; GC backs off
 if a run is actively writing. Standard Nix-style.
 
@@ -410,15 +410,15 @@ can be swept too. Dangling `checkouts/auto/` entries were already
 removed during root collection.
 
 **Classification for free.** Because every inbound reference is a
-symlink inside `.cairn/`, `cairn gc --explain` reports why each object
+symlink inside `.cairns/`, `cairn gc --explain` reports why each object
 was kept: walk the reverse index the mark phase built, list each inbound
 symlink's source. "Kept because referenced by
 `cairns/abc/7f3c…/children/000`, which is kept because
 `runs/pipeline-2026-…/steps/012-extract`."
 
-**No database.** A full scan of `.cairn/` on every `cairn gc` is fine at
+**No database.** A full scan of `.cairns/` on every `cairn gc` is fine at
 Cairn's scale for a long time. The escape hatch is an incremental index
-at `.cairn/index/` — same as Nix's sqlite cache, just an optimization
+at `.cairns/index/` — same as Nix's sqlite cache, just an optimization
 over ground truth. Ground truth stays the filesystem.
 
 ## What this buys
@@ -442,7 +442,7 @@ over ground truth. Ground truth stays the filesystem.
   to its meaning.
 - **Progressive disclosure.** A parent record renders without opening
   children; expanding a child is one file open.
-- **`ls` is debugging.** Every dep is a symlink. `find -L .cairn -lname
+- **`ls` is debugging.** Every dep is a symlink. `find -L .cairns -lname
   '*abc123*'` enumerates every reference to a content_hash. No JSON
   parsing.
 - **Concurrent and crash-safe by construction.** Atomic publish via
@@ -609,7 +609,7 @@ the stack, not ground truth.
   collapse if they only care about the trace view; the cairn-identity
   information is additive.
 - **Scale.** Filesystem is ground truth; at scale the same logical
-  model materializes into a sqlite index at `.cairn/index/`. Inode
+  model materializes into a sqlite index at `.cairns/index/`. Inode
   pressure from per-record dirs and symlinks is addressed at the index
   layer, not by changing the model.
 - **Windows.** Not supported. Symlinks to files are the wart (junctions

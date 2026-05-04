@@ -20,7 +20,7 @@ import os
 from cairns import step, run, trace
 
 # Track state across runs via a file
-_state_file = ".cairn/failure_state"
+_state_file = ".cairns/failure_state"
 
 
 def _get_attempt() -> int:
@@ -73,11 +73,11 @@ if __name__ == "__main__":
 
     attempt = _get_attempt()
     print(f"Attempt #{attempt}")
-    print(f"Store: .cairn/\n")
+    print(f"Store: .cairns/\n")
 
     t0 = time.monotonic()
     try:
-        results = run(pipeline, store_path=".cairn")
+        results = run(pipeline, store_path=".cairns")
         t1 = time.monotonic()
         print(f"\nPipeline completed in {t1 - t0:.2f}s:")
         for r in results:

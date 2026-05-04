@@ -251,7 +251,7 @@ if __name__ == "__main__":
     from cairns.interaction import StdinInteractionSink
 
     print(f"Mock RLHF over {len(PROMPTS)} prompts — expect {len(PROMPTS)} A/B questions.\n")
-    out = run(rlhf_pipeline, store_path=".cairn", interaction_sink=StdinInteractionSink())
+    out = run(rlhf_pipeline, store_path=".cairns", interaction_sink=StdinInteractionSink())
 
     print("\n─── Results ───")
     print(f"  final checkpoint : {out['checkpoint']}")

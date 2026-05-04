@@ -1,12 +1,12 @@
-"""Cairn CLI.
+"""Cairns CLI.
 
 Usage:
-    cairn script.py [ENTRY]             Run a script (default action)
-    cairn                               Browse runs interactively
-    cairn list                          List all runs
-    cairn show [RUN_ID]                 Show trace (latest if omitted)
-    cairn output PATH                   Show a cached output
-    cairn gc [--before DATE]            Garbage collect
+    cairns script.py [ENTRY]            Run a script (default action)
+    cairns                              Browse runs interactively
+    cairns list                         List all runs
+    cairns show [RUN_ID]                Show trace (latest if omitted)
+    cairns output PATH                  Show a cached output
+    cairns gc [--before DATE]           Garbage collect
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from typing import Any
 
 
 def _store_path(args: argparse.Namespace) -> str:
-    return getattr(args, "store", None) or ".cairn"
+    return getattr(args, "store", None) or ".cairns"
 
 
 # ── Commands ──
@@ -159,11 +159,11 @@ def main() -> None:
     if len(sys.argv) >= 2 and not sys.argv[1].startswith("-"):
         first_arg = sys.argv[1]
         if first_arg.endswith(".py") or os.path.isfile(first_arg):
-            # cairn script.py [entry] [--store PATH] [--force]
-            parser = argparse.ArgumentParser(prog="cairn")
+            # cairns script.py [entry] [--store PATH] [--force]
+            parser = argparse.ArgumentParser(prog="cairns")
             parser.add_argument("script", help="Python script to run")
             parser.add_argument("entry", nargs="?", default="main", help="Entry point function")
-            parser.add_argument("--store", "-s", default=".cairn")
+            parser.add_argument("--store", "-s", default=".cairns")
             parser.add_argument("--force", "-f", action="store_true", help="Clear cache for this entry point before running")
             args = parser.parse_args()
             cmd_run(args.script, args.entry, args.store, force=args.force)
@@ -171,24 +171,24 @@ def main() -> None:
 
     # Otherwise: subcommand mode
     parser = argparse.ArgumentParser(
-        prog="cairn",
+        prog="cairns",
         description="Compute graph orchestration with caching and observability",
     )
-    parser.add_argument("--store", "-s", default=".cairn", help="Store path (default: .cairn)")
+    parser.add_argument("--store", "-s", default=".cairns", help="Store path (default: .cairns)")
     subparsers = parser.add_subparsers(dest="command")
 
-    # cairn list
+    # cairns list
     subparsers.add_parser("list", help="List all runs")
 
-    # cairn show [RUN_ID]
+    # cairns show [RUN_ID]
     p_show = subparsers.add_parser("show", help="Show trace (latest if no run_id)")
     p_show.add_argument("run_id", nargs="?", default=None)
 
-    # cairn output PATH
+    # cairns output PATH
     p_output = subparsers.add_parser("output", help="Show a cached output")
     p_output.add_argument("path")
 
-    # cairn gc
+    # cairns gc
     p_gc = subparsers.add_parser("gc", help="Garbage collect")
     p_gc.add_argument("--before", help="Remove runs before this ISO date")
     p_gc.add_argument("--keep-latest", action="store_true", default=True)
@@ -204,7 +204,7 @@ def main() -> None:
     }
 
     if args.command is None:
-        # cairn with no args → interactive browser
+        # cairns with no args → interactive browser
         cmd_browse(args.store)
         return
 

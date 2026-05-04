@@ -2,7 +2,7 @@
 
 Demonstrates the three typed interaction primitives. Run in the TUI:
 
-    cairn examples/hitl.py
+    cairns examples/hitl.py
 
 Input/Choice/Confirm widgets mount in the detail pane when each step asks
 a question. Submit the value to continue.
@@ -14,8 +14,7 @@ Run headless (stdin fallback):
 
 from __future__ import annotations
 
-from cairns import run, step, trace
-from cairns.core.patterns import cached_output
+from cairns import cached_output, run, step, trace
 from cairns.interaction import await_choice, await_confirm, await_input
 
 
@@ -63,4 +62,4 @@ main = pipeline
 if __name__ == "__main__":
     from cairns.interaction import StdinInteractionSink
 
-    print(run(pipeline, store_path=".cairn", interaction_sink=StdinInteractionSink()))
+    print(run(pipeline, store_path=".cairns", interaction_sink=StdinInteractionSink()))

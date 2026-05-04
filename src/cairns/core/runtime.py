@@ -156,7 +156,7 @@ class Runtime:
             await pipeline()
     """
 
-    def __init__(self, store_path: str = ".cairn") -> None:
+    def __init__(self, store_path: str = ".cairns") -> None:
         self.store_path = store_path
         self.hash_funcs: dict[type, Callable[[Any], Any]] = {}
         self.serializers: dict[type, "Serializer"] = {}
@@ -212,7 +212,7 @@ class Runtime:
         """Execute `entry` as a file-backed run. Sync; calls `asyncio.run`.
 
         The store path lives on this runtime (`self.store_path`); call sites
-        wanting a different `.cairn/` location build a new `Runtime`.
+        wanting a different `.cairns/` location build a new `Runtime`.
         """
         from cairns.run import run as _execute  # noqa: PLC0415
 

@@ -18,12 +18,12 @@ from typing import Any
 from .app import CairnsApp
 
 
-def run_app(entry_fn: Any, store_path: str = ".cairn", label: str = "main") -> None:
+def run_app(entry_fn: Any, store_path: str = ".cairns", label: str = "main") -> None:
     app = CairnsApp(store_path, entry_fn=entry_fn, label=label)
     app.run()
 
 
-def browse(store_path: str = ".cairn") -> None:
+def browse(store_path: str = ".cairns") -> None:
     app = CairnsApp(store_path)
     app.run()
 
