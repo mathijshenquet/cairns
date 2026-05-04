@@ -105,7 +105,7 @@ jobs:
           TAG: ${{ steps.ref.outputs.tag }}
         run: |
           tag_version="${TAG#v}"
-          file_version="$(python3 -c 'import tomllib,pathlib;print(tomllib.loads(pathlib.Path("pyproject.toml").read_bytes())["project"]["version"])')"
+          file_version="$(python3 -c 'import tomllib;print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')"
           if [[ "${tag_version}" != "${file_version}" ]]; then
             echo "Tag ${tag_version} does not match pyproject ${file_version}" >&2
             exit 1
