@@ -81,13 +81,18 @@ class Handle(Generic[R]):
         ))
 
     @classmethod
-    def _deferred(
+    def deferred(
         cls,
         fn: Callable[..., Handle[R]],
         args: tuple[Any, ...],
         kwargs: dict[str, Any],
     ) -> Handle[R]:
-        """Capture a top-level @step call until `cairns.run(handle)` runs it."""
+        """Capture a top-level @step call until `cairns.run(handle)` runs it.
+
+        Used by the `@step` wrapper when there's no active run. The
+        returned Handle is in the deferred state until `consume()` is
+        called (by `cairns.run`/`arun`).
+        """
         h: Handle[R] = cls.__new__(cls)
         h._span = None
         h._task = None
@@ -102,9 +107,14 @@ class Handle(Generic[R]):
         """True if this Handle is captured at top level and waiting for `run()`."""
         return self._task is None
 
-    def _consume(self) -> Handle[R]:
+    @property
+    def fn_name(self) -> str:
+        """Name of the captured step (for run labels / drop warnings)."""
+        return getattr(self._fn, "__name__", "<step>") if self._fn is not None else "<step>"
+
+    def consume(self) -> Handle[R]:
         """Replay a deferred Handle inside the now-active run, returning the
-        eager Handle that the wrapper produces. Internal use by `run()`/`arun()`.
+        eager Handle that the wrapper produces. Used by `cairns.run`/`arun`.
         """
         if self._task is not None:
             raise RuntimeError(
@@ -166,9 +176,8 @@ class Handle(Generic[R]):
         # the warnings module is partially gone.
         if self._task is None and not self._consumed:
             try:
-                fn_name = getattr(self._fn, "__name__", "<step>")
                 warnings.warn(
-                    f"deferred {fn_name}(...) was dropped without being passed "
+                    f"deferred {self.fn_name}(...) was dropped without being passed "
                     f"to cairns.run() — its body never executed",
                     ResourceWarning,
                     stacklevel=2,
@@ -762,7 +771,7 @@ def _make_step(
         # will hand this to `cairns.run(handle)` which replays it inside a
         # freshly-built run context (where this same wrapper goes eager).
         if current_run_or_none() is None:
-            return Handle[Any]._deferred(wrapper, args, kwargs)  # type: ignore[reportPrivateUsage]
+            return Handle[Any].deferred(wrapper, args, kwargs)
 
         parent = current_span.get()
         rt = current_run()

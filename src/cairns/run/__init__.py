@@ -6,7 +6,7 @@ import asyncio
 import json
 import os
 from datetime import datetime, timezone
-from typing import Any, TypeVar
+from typing import TypeVar
 
 from cairns.core import Event, Handle, JSONLSink, OverlayStore
 from cairns.core.runtime import (
@@ -205,11 +205,11 @@ def run(
     custom hashers). The two are mutually exclusive.
     """
     rt = _resolve_runtime(runtime, store_path)
-    entry_label = label or _handle_label(handle)
+    entry_label = label or handle.fn_name
 
     async def _go() -> R:
         with _build_run(rt, entry_label, dict(carry or {}), interaction_sink):
-            eager: Handle[R] = handle._consume()  # type: ignore[reportPrivateUsage]
+            eager: Handle[R] = handle.consume()
             return await eager
 
     return asyncio.run(_go())
@@ -230,17 +230,11 @@ async def arun(
     Textual apps, aiohttp servers, Jupyter kernels.
     """
     rt = _resolve_runtime(runtime, store_path)
-    entry_label = label or _handle_label(handle)
+    entry_label = label or handle.fn_name
 
     with _build_run(rt, entry_label, dict(carry or {}), interaction_sink):
-        eager: Handle[R] = handle._consume()  # type: ignore[reportPrivateUsage]
+        eager: Handle[R] = handle.consume()
         return await eager
-
-
-def _handle_label(handle: Handle[Any]) -> str:
-    """Extract a run label from a deferred Handle's captured fn name."""
-    fn = handle._fn  # type: ignore[reportPrivateUsage]
-    return getattr(fn, "__name__", "main") if fn is not None else "main"
 
 
 # Re-export gc + show for the public `cairns.run` surface.
