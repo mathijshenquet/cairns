@@ -25,6 +25,28 @@ class Wait:
 
 
 @dataclass
+class SpanMetrics:
+    """Per-span size + duration counters reduced from `end` events.
+
+    All four are optional because reducers consume partial event streams (e.g.
+    a span without an `end` event yet has no metrics). `duration` /
+    `own_duration` mirror the names emitted on `end` event kwargs by
+    `core.step._compute_metrics`.
+    """
+
+    size: int | None = None
+    own_size: int | None = None
+    duration: float | None = None
+    own_duration: float | None = None
+    cached_duration: float | None = None
+
+
+_METRIC_FIELDS: tuple[str, ...] = (
+    "size", "own_size", "duration", "own_duration", "cached_duration",
+)
+
+
+@dataclass
 class Span:
     id: int
     parent: int | None
@@ -37,7 +59,7 @@ class Span:
     record_path: str | None = None
     origin: str | None = None  # "created" | "recalled" | "carried"
     error: str | None = None
-    metrics: dict[str, Any] = field(default_factory=lambda: cast(dict[str, Any], {}))
+    metrics: SpanMetrics = field(default_factory=SpanMetrics)
     traces: list[dict[str, Any]] = field(default_factory=lambda: cast(list[dict[str, Any]], []))
 
 
@@ -96,9 +118,9 @@ class SpanGraph:
                     s.error = str(e.get("err", "error"))
                 else:
                     s.status = "cancelled"
-                for mk in ("size", "own_size", "time", "own_time"):
+                for mk in _METRIC_FIELDS:
                     if mk in e:
-                        s.metrics[mk] = e[mk]
+                        setattr(s.metrics, mk, e[mk])
             self.open_waits.pop(span_id, None)
 
         elif kind == "wait":

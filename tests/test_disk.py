@@ -314,12 +314,16 @@ def test_cached_flamegraph_reconstructs_original_timing(tmp_path: Path) -> None:
     first_trace = first_runs[-1] / "trace.jsonl"
     with open(first_trace, "r") as f:
         first_events = [json.loads(line) for line in f if line.strip()]
-    parent_end_first = next(e for e in first_events if e["e"] == "end" and e.get("name") is None and e.get("origin") == "created" and e.get("time") is not None)
-    original_parent_duration = parent_end_first["time"]
+    parent_end_first = next(
+        e for e in first_events
+        if e["e"] == "end" and e.get("origin") == "created" and e.get("duration") is not None
+    )
+    original_parent_duration = parent_end_first["duration"]
     assert original_parent_duration >= 0.05
 
-    # Second run: cache hit on parent. Replayed subtree should carry virtual
-    # timing consistent with original durations.
+    # Second run: cache hit on parent. Stitched cached events fire at real
+    # `monotonic()` (sort-by-ts is clean); the subtree's original durations
+    # ride on the `duration` kwarg of each end event.
     run(parent, store_path=store_path)
     second_runs = sorted(d for d in (tmp_path / ".cairns" / "runs").iterdir() if d.is_dir() and d.name.startswith("parent-"))
     second_trace = second_runs[-1] / "trace.jsonl"
@@ -327,38 +331,36 @@ def test_cached_flamegraph_reconstructs_original_timing(tmp_path: Path) -> None:
         second_events = [json.loads(line) for line in f if line.strip()]
 
     # Parent cached end event carries the original duration.
-    parent_end = next(e for e in second_events if e["e"] == "end" and e.get("cached") and e.get("origin") == "carried" or (e["e"] == "end" and e.get("cached") and e.get("origin") == "recalled"))
-    assert parent_end.get("time", 0) > 0.04
+    parent_end = next(
+        e for e in second_events
+        if e["e"] == "end" and e.get("cached") and e.get("origin") in ("recalled", "carried")
+    )
+    assert parent_end.get("duration", 0) > 0.04
 
-    # Replayed child spawns/ends are present with origin=recalled and non-zero duration.
+    # Stitched child spawns/ends are present with origin=recalled and original durations.
     child_spawns = [e for e in second_events if e["e"] == "spawn" and e.get("origin") == "recalled" and e.get("name") == "child"]
     child_ends = [e for e in second_events if e["e"] == "end" and e.get("origin") == "recalled" and e.get("cached")]
     assert len(child_spawns) == 2
     assert len(child_ends) >= 2
 
-    # Each replayed child's end event reports its original time, not ~0.
-    child_times = [e["time"] for e in child_ends if e.get("name") != "parent"]
-    assert all(t > 0.04 for t in child_times), f"child durations collapsed: {child_times}"
+    # Each stitched child's end event reports its original duration, not ~0.
+    child_durations = [e["duration"] for e in child_ends if e.get("name") != "parent"]
+    assert all(t > 0.04 for t in child_durations), f"child durations collapsed: {child_durations}"
 
-    # Replayed trace events under the cached children are present.
-    replayed_traces = [e for e in second_events if e["e"] == "trace" and e.get("replayed") and e.get("msg") == "child working"]
-    assert len(replayed_traces) == 2
-
-    # Virtual ts on the cached subtree reconstructs the original shape: the
-    # parent's end ts minus its spawn ts equals the cached duration.
-    parent_spawn = next(e for e in second_events if e["e"] == "spawn" and e.get("origin") is None and e.get("name") == "parent")
-    reconstructed = parent_end["ts"] - parent_spawn["ts"]
-    assert abs(reconstructed - original_parent_duration) < 0.02, (
-        f"reconstructed={reconstructed} original={original_parent_duration}"
-    )
+    # Stitched trace events under the cached children are flagged `cached: true`.
+    cached_traces = [e for e in second_events if e["e"] == "trace" and e.get("cached") and e.get("msg") == "child working"]
+    assert len(cached_traces) == 2
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="cached child replay stamps a virtual future end_ts, but the parent resumes at real time",
-)
 def test_cached_child_replay_does_not_make_parent_time_go_backwards(tmp_path: Path) -> None:
-    """Awaiting a cached child should not emit later parent events in the past."""
+    """Awaiting a cached child must not emit later parent events in the past.
+
+    The fix: cached subtree events are stitched at real `monotonic()` rather
+    than pre-stamped with virtual ts in the future. So `child_end` now fires
+    in the same real-time window as the parent's `resume`, and sort-by-ts
+    stays clean. Original cached duration is recoverable from the
+    `duration` kwarg, not the timestamp.
+    """
     import asyncio
 
     store_path = str(tmp_path / ".cairns")

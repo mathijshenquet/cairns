@@ -22,7 +22,7 @@ from cairns.core import CompositeSink, FileStore, Handle
 from cairns.core.runtime import Run
 from cairns.run import RunDirSink, RunInfo, list_runs
 from cairns.run import _make_run_dir, _update_latest  # noqa: PLC2701
-from cairns.run.spans import SpanGraph
+from cairns.run.spans import Span, SpanGraph
 
 from .messages import (
     ChoiceInteractionMessage,
@@ -249,14 +249,10 @@ class CairnsApp(App[None]):
         elif kind == "end":
             span_id = int(e["seq"])
             s = self.graph.spans.get(span_id)
-            dur_str = ""
-            if s is not None and s.start_ts is not None and s.end_ts is not None:
-                dur_str = self._format_duration(s.end_ts - s.start_ts)
             cached = s is not None and s.status == "cached"
-            # Prefix cached spans with a marker; keep the replayed subtree in
-            # the tree so the flamegraph shows what the cached work looked like.
-            suffix = (f"cached {dur_str}".strip() if cached else dur_str)
-            self._set_label(span_id, suffix)
+            suffix = self._duration_suffix(s) if s is not None else ""
+            label = (f"cached {suffix}".strip() if cached else suffix)
+            self._set_label(span_id, label)
             self._refresh_label_chain(span_id, include_self=False)
 
         elif kind == "error":
@@ -374,6 +370,22 @@ class CairnsApp(App[None]):
             return f"{seconds * 1000:.0f}ms"
         return f"{seconds:.1f}s"
 
+    def _duration_suffix(self, s: Span) -> str:
+        """Render the `duration (cached_duration cached)` suffix for a span.
+
+        `metrics.duration` is the span's measured wall (live: real, cached:
+        original-when-stored); `metrics.cached_duration` is the additional
+        cache supply absorbed inside (excluding own). Total subtree time is
+        the sum; we annotate the cached portion when nonzero.
+        """
+        own = s.metrics.duration
+        cached_extra = s.metrics.cached_duration or 0.0
+        if own is None:
+            return ""
+        if cached_extra > 0:
+            return f"{self._format_duration(own + cached_extra)} ({self._format_duration(cached_extra)} cached)"
+        return self._format_duration(own)
+
     def _refresh_detail(self, span_id: int) -> None:
         s = self.graph.spans.get(span_id)
         if s is None:
@@ -381,12 +393,9 @@ class CairnsApp(App[None]):
             return
         status = self.graph.effective_status(span_id)
 
-        # Header: span label + duration if terminal
-        suffix = ""
-        if status in self.TERMINAL_STATUSES and s.start_ts is not None and s.end_ts is not None:
-            dur = s.end_ts - s.start_ts
-            if dur > 0:
-                suffix = f"{dur:.3f}s"
+        # Header: span label + duration if terminal. Same suffix shape used
+        # in the tree row, so the cached annotation surfaces consistently.
+        suffix = self._duration_suffix(s) if status in self.TERMINAL_STATUSES else ""
         out = Text()
         out.append(self._render_label(span_id, suffix))
         out.append("\n\n")
@@ -450,9 +459,7 @@ class CairnsApp(App[None]):
                      "child", None, None)
                 )
             if cstatus in self.TERMINAL_STATUSES and cs.end_ts is not None:
-                start_ts = cs.start_ts if cs.start_ts is not None else cs.end_ts
-                dur = cs.end_ts - start_ts
-                dur_str = f"{dur:.3f}s" if dur > 0.001 else ""
+                dur_str = self._duration_suffix(cs)
                 extra = f"cached {dur_str}".strip() if cstatus == "cached" else dur_str
                 timeline.append(
                     (cs.end_ts, self._render_label(cid, extra, status=cstatus),

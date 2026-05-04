@@ -60,6 +60,13 @@ class Handle(Generic[R]):
             result = yield from self._task.__await__()
         finally:
             awaiter.exit_await()
+            # Max-merge the awaited child's virtual-clock skew into the
+            # awaiter. The child inherited `awaiter.virtual_skew` at spawn,
+            # then bumped it during its body (cached awaits + nested cached
+            # subtrees), so `child.virtual_skew` is the awaiter's logical
+            # clock at the moment this child finished. Sequential awaits
+            # ratchet (sum); parallel `gather` collapses (max).
+            awaiter.virtual_skew = max(awaiter.virtual_skew, self._span.virtual_skew)
             emit_event("resume", seq=awaiter.seq)
         return result
 
@@ -168,8 +175,14 @@ def _compute_metrics(span: TaskSpan, *, size: int, own_size: int) -> SpanMetrics
         f"suspended_total ({span.suspended_total}) exceeds wall ({wall}) on "
         f"span {span.name!r} — enter/exit_await is unbalanced"
     )
-    own_time = max(0.0, wall - span.suspended_total)  # clamp FP slop
-    return SpanMetrics(size=size, own_size=own_size, time=wall, own_time=own_time)
+    own_duration = max(0.0, wall - span.suspended_total)  # clamp FP slop
+    return SpanMetrics(
+        size=size,
+        own_size=own_size,
+        duration=wall,
+        own_duration=own_duration,
+        cached_duration=span.cached_duration(),
+    )
 
 
 def _build_child_refs(span: TaskSpan) -> list[dict[str, Any]]:
@@ -208,38 +221,36 @@ def _build_record_events(span: TaskSpan, child_refs: list[dict[str, Any]]) -> li
     return events
 
 
-def _replay_record_events(record_path: str, parent_seq: int, base_ts: float) -> None:
+def _stitch_record_events(record_path: str, parent_seq: int) -> None:
     """Stream a record's stored events into the current run trace under parent_seq.
 
-    Each event's stored `ts` is record-relative; we add `base_ts` to synthesize
-    a virtual wall-clock time that reconstructs the original flamegraph timing
-    — a cached subtree that originally took 2s still spans 2s in the run trace,
-    even though replay itself is ~instant.
+    Stitching = pulling cached events into the live trace as they happen now.
+    Each event fires at real `monotonic()` (stamped by `emit_event`); the
+    stored relative `ts` offset is *not* added to the wall clock — it would
+    push events into the future and make sort-by-ts inversions. Cached
+    subtree durations live on the `end` event's `duration` kwarg.
 
     Trace lines emit under parent_seq; spawn lines recurse through the record's
     ordered children/ symlinks. The caller emits the enclosing spawn/end for
     `record_path` itself.
     """
     for rec in iter_record_events(record_path):
-        rel_ts = float(rec.get("ts", 0.0))
-        virtual_ts = base_ts + rel_ts
         kind = rec.get("kind")
         if kind == "trace":
             emit_event(
                 "trace",
-                ts=virtual_ts,
                 parent_seq=parent_seq,
+                cached=True,
                 message=rec.get("message", ""),
-                kwargs={**(rec.get("kwargs") or {}), "replayed": True},
+                kwargs=rec.get("kwargs") or {},
             )
         elif kind == "spawn":
             child_record = _event_child_record(record_path, rec)
             if child_record is not None:
-                _replay_recalled_span(
+                _stitch_recalled_span(
                     record_path=child_record,
                     parent_seq=parent_seq,
                     short_name=rec.get("short_name"),
-                    spawn_ts=virtual_ts,
                 )
 
 
@@ -263,17 +274,16 @@ def _event_child_record(record_path: str, rec: dict[str, Any]) -> str | None:
     return None
 
 
-def _replay_recalled_span(
+def _stitch_recalled_span(
     *,
     record_path: str,
     parent_seq: int,
     short_name: str | None,
-    spawn_ts: float,
 ) -> None:
     """Emit a recalled spawn+body+end for a record referenced from a parent.
 
-    Events are stamped with virtual wall times starting at `spawn_ts` so the
-    reconstructed span bar matches the cached duration.
+    Events fire at real time (stamped by `emit_event`). The recalled span's
+    original duration travels on the `end` event's `duration` kwarg.
     """
     info = read_record_info(record_path)
     if info is None:
@@ -282,7 +292,6 @@ def _replay_recalled_span(
     name = short_name or info.short_name or info.record_id
     emit_event(
         "spawn",
-        ts=spawn_ts,
         seq=sid,
         parent_seq=parent_seq,
         name=name,
@@ -293,10 +302,9 @@ def _replay_recalled_span(
             "origin": "recalled",
         },
     )
-    _replay_record_events(record_path, sid, base_ts=spawn_ts)
+    _stitch_record_events(record_path, sid)
     emit_event(
         "end",
-        ts=spawn_ts + info.duration,
         seq=sid,
         cached=True,
         kwargs={
@@ -306,8 +314,9 @@ def _replay_recalled_span(
             "origin": "recalled",
             "size": 0,
             "own_size": 0,
-            "time": info.duration,
-            "own_time": info.own_duration,
+            "duration": info.duration,
+            "own_duration": info.own_duration,
+            "cached_duration": info.cached_duration,
         },
     )
 
@@ -338,12 +347,13 @@ async def _gather_children(span: TaskSpan) -> None:
     span.suspended_total += time.monotonic() - t0
 
 
-def _replay_cached(span: TaskSpan, cached: Record) -> Any:
-    """Mirror the cached record into this run's trace and close the span.
+def _stitch_cached(span: TaskSpan, cached: Record) -> Any:
+    """Stitch a cached record into this run's trace and close the span.
 
-    Events inside the cached subtree are stamped with virtual wall times so the
-    flamegraph reconstructs the original shape — this span's bar spans exactly
-    `cached.duration`, with child spans/traces positioned at their stored offsets.
+    "Stitch", not "replay" — we pull the cached subtree's events into the live
+    trace as `monotonic()` events. The original execution's duration travels
+    on the `end` event's `duration` kwarg; nothing in the timestamp itself
+    encodes how long it took originally.
     """
     span.cached_output_value = cached.result
     span.cached_tracing_value = cached.traces
@@ -351,29 +361,31 @@ def _replay_cached(span: TaskSpan, cached: Record) -> Any:
     span.record_id = cached.record_id
     span.record_path = cached.record_path
     span.cached = True
-
-    # span.start_ts was set to wall time when the wrapper entered; it's also
-    # the virtual base for the cached subtree. Align end_ts with the original
-    # duration so `end_ts - start_ts` reads as the cached bar width.
-    base_ts = span.start_ts
+    # The cache-hit subtree contributes (its own original wall) + (whatever
+    # nested cached supply was recorded when it was first stored) to the
+    # awaiter's logical clock. `virtual_skew` carries the full contribution
+    # so `Handle.__await__`'s max-merge sees it; the end event's
+    # `cached_duration` kwarg keeps the same "additional supply, excluding
+    # own duration" semantic that live spans use.
     duration = cached.duration
     own_duration = cached.own_duration
+    span.virtual_skew = span.virtual_skew_initial + duration + cached.cached_duration
 
     if cached.record_path:
-        _replay_record_events(cached.record_path, span.seq, base_ts=base_ts)
+        _stitch_record_events(cached.record_path, span.seq)
     else:
         for t in cached.traces:
             emit_event(
                 "trace",
                 parent_seq=span.seq,
+                cached=True,
                 message=t.message,
-                kwargs={**t.kwargs, "replayed": True},
+                kwargs=dict(t.kwargs),
             )
 
-    span.end_ts = base_ts + duration
+    span.end_ts = time.monotonic()
     emit_event(
         "end",
-        ts=span.end_ts,
         seq=span.seq,
         cached=True,
         kwargs={
@@ -383,8 +395,9 @@ def _replay_cached(span: TaskSpan, cached: Record) -> Any:
             "origin": cached.origin,
             "size": 0,
             "own_size": 0,
-            "time": duration,
-            "own_time": own_duration,
+            "duration": duration,
+            "own_duration": own_duration,
+            "cached_duration": cached.cached_duration,
         },
     )
     return cached.result
@@ -413,6 +426,7 @@ def _publish_success(
             traces=list(span.traces),
             duration=wall,
             own_duration=own_time,
+            cached_duration=span.cached_duration(),
             tags=dict(tags or {}),
             body_hash=info.body_hash,
             version=info.version,
@@ -467,6 +481,7 @@ def _publish_error(
             error=stored_error,
             duration=wall,
             own_duration=own_time,
+            cached_duration=span.cached_duration(),
             tags=dict(tags or {}),
             body_hash=info.body_hash,
             version=info.version,
@@ -631,6 +646,13 @@ def _make_step(
             name=fn.__name__,
             info=_info,
         )
+        # Inherit the parent's virtual clock so sequential cached awaits
+        # ratchet (each child sees the inflated skew its older sibling left
+        # behind) while parallel `gather`s share the same starting point and
+        # max-merge in `Handle.__await__`. Snapshot for the body-end delta.
+        if parent is not None:
+            span.virtual_skew = parent.virtual_skew
+            span.virtual_skew_initial = parent.virtual_skew
 
         async def run() -> Any:
             token = current_span.set(span)
@@ -657,7 +679,7 @@ def _make_step(
                     # Carry-origin hits short-circuit regardless of memo;
                     # memo (bool or predicate) takes a hit as usual.
                     if memo or cached.origin == "carried":
-                        return _replay_cached(span, cached)
+                        return _stitch_cached(span, cached)
 
                 emit_event("start", seq=span.seq)
                 result = await fn(**resolved)

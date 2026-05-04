@@ -47,6 +47,7 @@ class RecordInfo:
     short_name: str | None
     duration: float
     own_duration: float
+    cached_duration: float = 0.0
 
 
 class Store(Protocol):
@@ -220,6 +221,7 @@ def read_record_info(record_path: str) -> RecordInfo | None:
         short_name=meta.get("short_name"),
         duration=float(meta.get("duration", 0.0)),
         own_duration=float(meta.get("own_duration", 0.0)),
+        cached_duration=float(meta.get("cached_duration", 0.0)),
     )
 
 
@@ -320,6 +322,7 @@ def load_record(record_path: str) -> Record | None:
         traces=traces,
         duration=float(meta.get("duration", 0.0)),
         own_duration=float(meta.get("own_duration", 0.0)),
+        cached_duration=float(meta.get("cached_duration", 0.0)),
         error=None,
         cairn_id=_infer_cairn_id(record_path, meta),
         record_id=os.path.basename(record_path),
@@ -386,6 +389,7 @@ class FileStore:
                 traces=traces,
                 duration=float(meta.get("duration", 0.0)),
                 own_duration=float(meta.get("own_duration", 0.0)),
+                cached_duration=float(meta.get("cached_duration", 0.0)),
                 error=None,
                 cairn_id=key,
                 record_id=record_id,
@@ -428,6 +432,7 @@ class FileStore:
                 traces=traces,
                 duration=float(meta.get("duration", 0.0)),
                 own_duration=float(meta.get("own_duration", 0.0)),
+        cached_duration=float(meta.get("cached_duration", 0.0)),
                 error=err,
                 cairn_id=cairn_id,
                 record_id=record_id,
@@ -501,6 +506,7 @@ class FileStore:
             "version": entry.version,
             "duration": entry.duration,
             "own_duration": entry.own_duration,
+            "cached_duration": entry.cached_duration,
             "error": str(entry.error) if entry.error else None,
             "short_name": md.get("short_name"),
             "ts_created": time.time(),

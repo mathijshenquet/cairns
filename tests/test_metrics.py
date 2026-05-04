@@ -63,8 +63,8 @@ async def test_own_time_sequential():
         await parent()
 
     end = _end_for(rt.trace, "parent")
-    wall = end.kwargs["time"]
-    own = end.kwargs["own_time"]
+    wall = end.kwargs["duration"]
+    own = end.kwargs["own_duration"]
     # Parent itself did almost no work; both children were awaited.
     assert wall >= 0.05
     assert own < 0.015, f"own_time should be tiny, got {own}"
@@ -88,8 +88,8 @@ async def test_own_time_gather():
         await parent()
 
     end = _end_for(rt.trace, "parent")
-    wall = end.kwargs["time"]
-    own = end.kwargs["own_time"]
+    wall = end.kwargs["duration"]
+    own = end.kwargs["own_duration"]
     # Both children ran concurrently (~40ms wall). Parent's own_time near 0;
     # critically, not near 80ms (which naive sum-of-durations would give → own<0).
     assert 0.03 <= wall <= 0.15
@@ -123,11 +123,11 @@ async def test_own_time_nested():
     end_c = _end_for(rt.trace, "c")
 
     # a did nothing itself — all wait on b
-    assert end_a.kwargs["own_time"] < 0.015
+    assert end_a.kwargs["own_duration"] < 0.015
     # b's own_time reflects its own sleep, not c's
-    assert 0.02 <= end_b.kwargs["own_time"] <= 0.06
+    assert 0.02 <= end_b.kwargs["own_duration"] <= 0.06
     # c's own_time ≈ its sleep
-    assert 0.02 <= end_c.kwargs["own_time"] <= 0.06
+    assert 0.02 <= end_c.kwargs["own_duration"] <= 0.06
 
 
 @pytest.mark.asyncio
@@ -143,8 +143,8 @@ async def test_own_time_own_work():
         await compute()
 
     end = _end_for(rt.trace, "compute")
-    wall = end.kwargs["time"]
-    own = end.kwargs["own_time"]
+    wall = end.kwargs["duration"]
+    own = end.kwargs["own_duration"]
     # No Handle awaits → own ≈ wall.
     assert abs(wall - own) < 0.01
 
@@ -170,12 +170,12 @@ async def test_own_metrics_on_cached_hit():
 
         assert fresh.kwargs["size"] > 0
         assert fresh.kwargs["own_size"] == fresh.kwargs["size"]
-        assert fresh.kwargs["own_time"] >= 0.005
+        assert fresh.kwargs["own_duration"] >= 0.005
 
         assert hit.cached is True
         assert hit.kwargs["size"] == 0
         assert hit.kwargs["own_size"] == 0
-        assert hit.kwargs["own_time"] >= 0.0  # real measurement, near zero
+        assert hit.kwargs["own_duration"] >= 0.0  # real measurement, near zero
 
 
 # ── Error path still emits metrics ──
@@ -199,8 +199,8 @@ async def test_own_metrics_on_error():
     err = errors[0]
     assert err.kwargs["size"] > 0
     assert err.kwargs["own_size"] == err.kwargs["size"]
-    assert err.kwargs["time"] >= 0.005
-    assert err.kwargs["own_time"] >= 0.005
+    assert err.kwargs["duration"] >= 0.005
+    assert err.kwargs["own_duration"] >= 0.005
 
 
 # ── Error propagating through an awaited handle ──
@@ -229,8 +229,8 @@ async def test_error_through_awaited_child():
     assert len(errors) == 2
     for err in errors:
         assert "size" in err.kwargs
-        assert "own_time" in err.kwargs
-        assert err.kwargs["own_time"] >= 0.0
+        assert "own_duration" in err.kwargs
+        assert err.kwargs["own_duration"] >= 0.0
 
 
 # ── Spawn-without-await: cleanup gather attributed to await time ──
@@ -256,12 +256,82 @@ async def test_spawn_without_await_cleanup_counts_as_await():
         await parent()
 
     end = _end_for(rt.trace, "parent")
-    wall = end.kwargs["time"]
-    own = end.kwargs["own_time"]
+    wall = end.kwargs["duration"]
+    own = end.kwargs["own_duration"]
     # Parent did near-zero of its own work; wall includes the ~50ms waiting on
     # the orphan during cleanup. own_time must NOT include that wait.
     assert wall >= 0.04
     assert own < 0.015, f"own_time should exclude cleanup gather, got {own}"
+
+
+# ── cached_duration metric ──
+
+
+@pytest.mark.asyncio
+async def test_cached_duration_serial_sums():
+    """Sequential awaits over cached children: parent's `cached_duration`
+    metric sums each child's contribution (this is the wall-counterfactual:
+    if all children had run live in series, that's how long it would take)."""
+
+    @step(memo=True)
+    async def slow_a() -> int:
+        await asyncio.sleep(0.04)
+        return 1
+
+    @step(memo=True)
+    async def slow_b() -> int:
+        await asyncio.sleep(0.04)
+        return 2
+
+    @step
+    async def warm() -> int:
+        return await slow_a() + await slow_b()
+
+    @step
+    async def parent() -> int:
+        return await slow_a() + await slow_b()
+
+    async with Harness() as rt:
+        await warm()      # populate the cache
+        await parent()    # both children cached on this run
+        end = _end_for(rt.trace, "parent")
+        # Both children took ≈40ms originally. Serial → sum.
+        assert end.kwargs["cached_duration"] >= 0.07, end.kwargs["cached_duration"]
+
+
+@pytest.mark.asyncio
+async def test_cached_duration_parallel_takes_max():
+    """`asyncio.gather` over cached children: parent's `cached_duration`
+    is the max, not the sum — that's the wall-counterfactual for parallel
+    work."""
+
+    @step(memo=True)
+    async def slow_a() -> int:
+        await asyncio.sleep(0.04)
+        return 1
+
+    @step(memo=True)
+    async def slow_b() -> int:
+        await asyncio.sleep(0.04)
+        return 2
+
+    @step
+    async def warm() -> int:
+        a, b = await asyncio.gather(slow_a(), slow_b())
+        return a + b
+
+    @step
+    async def parent() -> int:
+        a, b = await asyncio.gather(slow_a(), slow_b())
+        return a + b
+
+    async with Harness() as rt:
+        await warm()      # populate the cache
+        await parent()    # both children cached on this run
+        end = _end_for(rt.trace, "parent")
+        cached = end.kwargs["cached_duration"]
+        # Parallel collapses: take ≈40ms (max), not ≈80ms (sum).
+        assert 0.03 <= cached <= 0.06, f"expected ≈max(40ms), got {cached}"
 
 
 # ── Cancellation path emits no stored metrics ──

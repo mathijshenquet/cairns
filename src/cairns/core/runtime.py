@@ -76,8 +76,6 @@ class MemorySink:
         self.events: list[Event] = []
 
     def emit(self, event: Event) -> None:
-        if event.ts == 0.0:
-            event.ts = time.monotonic()
         self.events.append(event)
 
 
@@ -339,10 +337,10 @@ def current_run() -> Run:
 def emit_event(kind: str, *, ts: float = 0.0, **kwargs: Any) -> Event:
     """Emit an event to the active run's sink.
 
-    If `ts` is provided (non-zero), sinks preserve it instead of stamping
-    wall-clock time — used by cache-replay so the flamegraph can reconstruct
-    the original timing of a cached subtree.
+    Stamps `ts = monotonic()` here when the caller didn't supply one.
     """
+    if ts == 0.0:
+        ts = time.monotonic()
     event = Event(kind=kind, ts=ts, **kwargs)
     current_run().sink.emit(event)
     return event

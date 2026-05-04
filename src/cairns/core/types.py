@@ -258,6 +258,11 @@ class Record:
     error: BaseException | None = None
     duration: float = 0.0
     own_duration: float = 0.0
+    # Counterfactual cached time absorbed by this span's body — what the
+    # `cached`-supplied work would have taken on the wall if it had run live.
+    # Tracked via a max-merged virtual clock so parallel gathers report `max`
+    # and serial chains report `sum`.
+    cached_duration: float = 0.0
     cairn_id: str | None = None
     record_id: str | None = None
     record_path: str | None = None
@@ -271,24 +276,27 @@ class Record:
 
 @dataclass(frozen=True)
 class SpanMetrics:
-    """Size/time metrics emitted on a span's terminal event.
+    """Size/duration metrics emitted on a span's terminal event.
 
     `own_size` excludes bytes deduplicated via a content-addressed layer (today
-    equal to `size`). `own_time` is wall time minus time spent awaiting child
-    Handles. Cached hits report `size = own_size = 0` (nothing was written).
+    equal to `size`). `own_duration` is wall time minus time spent awaiting
+    child Handles. Cached hits report `size = own_size = 0` (nothing was
+    written) and carry the original execution's `duration` / `own_duration`.
     """
 
     size: int
     own_size: int
-    time: float
-    own_time: float
+    duration: float
+    own_duration: float
+    cached_duration: float = 0.0
 
     def as_kwargs(self) -> dict[str, Any]:
         return {
             "size": self.size,
             "own_size": self.own_size,
-            "time": self.time,
-            "own_time": self.own_time,
+            "duration": self.duration,
+            "own_duration": self.own_duration,
+            "cached_duration": self.cached_duration,
         }
 
 
@@ -322,6 +330,25 @@ class TaskSpan:
     suspend_count: int = field(default=0)
     suspend_start: float = field(default=0.0)
     suspended_total: float = field(default=0.0)
+
+    # Internal virtual-clock skew tracking — never escapes to event `ts`,
+    # only used to derive `cached_duration` on the end event / Record.
+    # `virtual_skew_initial` is a snapshot of the parent's `virtual_skew` at
+    # spawn time (so the child inherits the parent's logical clock); during
+    # the body, `virtual_skew` is max-merged from each awaited child's
+    # `virtual_skew`. `cached_duration` for the metric = the delta between
+    # them. Inheritance + max-merge gives `sum` for serial awaits and `max`
+    # for parallel `asyncio.gather` — the wall-counterfactual we want.
+    virtual_skew: float = field(default=0.0)
+    virtual_skew_initial: float = field(default=0.0)
+
+    def cached_duration(self) -> float:
+        """Counterfactual cached time absorbed by this span's body.
+
+        Delta between the virtual clock at end-of-body and the snapshot
+        taken at spawn. Clamped at 0 to absorb floating-point slop.
+        """
+        return max(0.0, self.virtual_skew - self.virtual_skew_initial)
 
     def enter_await(self) -> None:
         if self.suspend_count == 0:

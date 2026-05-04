@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import time
 from typing import Any
 
 from .runtime import Event
@@ -63,10 +62,6 @@ class JSONLSink:
     def emit(self, event: Event) -> None:
         if self._closed:
             return
-        # Pre-stamped ts (e.g. from cache replay) is preserved so virtual-time
-        # events keep their reconstructed flamegraph timing.
-        if event.ts == 0.0:
-            event.ts = time.monotonic()
         line = json.dumps(event_to_dict(event), default=str)
         self._file.write(line + "\n")
         self._file.flush()

@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 import os
 import sys
-import time
 from datetime import datetime
 from typing import Any
 
@@ -132,23 +131,34 @@ class LiveRenderer:
             self._print(f"  {relative_ts:8.3f}s {indent_for(span_id)}{icon} {_BOLD}{name_of(span_id)}{_RESET}{_DIM}{args_display}{_RESET}")
 
         elif kind == "start":
-            span_id = int(e["seq"])
-            icon = _color("◉", _YELLOW)
-            self._print(f"  {relative_ts:8.3f}s {indent_for(span_id)}{icon} {name_of(span_id)}")
+            # Span state still updates via `self.graph.apply(e)` above; the
+            # start row is suppressed in the live stream — it duplicates the
+            # spawn row in practice and adds visual noise.
+            return
 
         elif kind == "end":
             span_id = int(e["seq"])
             s = self.graph.spans.get(span_id)
             cached = s is not None and s.status == "cached"
-            duration = ""
-            if s is not None and s.start_ts is not None and s.end_ts is not None:
-                duration = f" ({s.end_ts - s.start_ts:.3f}s)"
+            # `metrics.duration` is the span's own measurable wall (live: real,
+            # cached: original-when-stored). `metrics.cached_duration` is the
+            # *additional* cache supply absorbed inside (excluding own).
+            # Total subtree time = sum of the two; report it with a
+            # parenthetical cached portion when there's any.
+            own = s.metrics.duration if s is not None else None
+            cached_extra = (s.metrics.cached_duration or 0.0) if s is not None else 0.0
+            suffix = ""
+            if own is not None:
+                if cached_extra > 0:
+                    suffix = f" ({own + cached_extra:.3f}s, {cached_extra:.3f}s cached)"
+                else:
+                    suffix = f" ({own:.3f}s)"
             if cached:
                 icon = _color("⚡", _GREEN)
-                self._print(f"  {relative_ts:8.3f}s {indent_for(span_id)}{icon} {name_of(span_id)} {_DIM}cached{_RESET}{duration}")
+                self._print(f"  {relative_ts:8.3f}s {indent_for(span_id)}{icon} {name_of(span_id)} {_DIM}cached{_RESET}{suffix}")
             else:
                 icon = _color("✓", _GREEN)
-                self._print(f"  {relative_ts:8.3f}s {indent_for(span_id)}{icon} {name_of(span_id)} done{duration}")
+                self._print(f"  {relative_ts:8.3f}s {indent_for(span_id)}{icon} {name_of(span_id)} done{suffix}")
 
         elif kind == "error":
             span_id = int(e["seq"])
@@ -172,7 +182,7 @@ class LiveRenderer:
     def emit(self, event: Event) -> None:
         """Sink-compatible emit: convert Event to dict and render."""
         from cairns.core import event_to_dict
-        event.ts = time.monotonic()
+        # `emit_event` already stamped `event.ts`; sinks treat events as read-only.
         self.render_event(event_to_dict(event))
 
 

@@ -12,7 +12,6 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import itertools
-import time
 from typing import TYPE_CHECKING, Any, Mapping, cast
 
 from cairns.core import Event, event_to_dict
@@ -42,7 +41,6 @@ class TuiSink:
         self._app = app
 
     def emit(self, event: Event) -> None:
-        event.ts = time.monotonic()
         d = event_to_dict(event)
         self._app.call_from_thread(self._app.post_message, PipelineEvent(d))
 
