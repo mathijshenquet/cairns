@@ -58,6 +58,10 @@ async def claude_stream(
         *args,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        # claude stream-json can emit single JSON lines well over asyncio's
+        # default 64 KiB StreamReader limit (e.g. large tool_result payloads
+        # from web searches), which crashes the iterator with LimitOverrunError.
+        limit=64 * 1024 * 1024,
     )
     assert proc.stdout is not None
     async for raw_line in proc.stdout:
