@@ -148,12 +148,15 @@ Inside `run()` (async):
    return the cached value.
 6. Emit `start`. Run the body.
 7. After the body returns, `asyncio.gather` any remaining `child_tasks` —
-   structured concurrency, so a step never outlives its parent. If any
-   child raised (and was never awaited, or was awaited and the exception
-   re-thrown), the first such exception is re-raised here: a parent does
-   not silently succeed over a failed child. Siblings are not cancelled;
-   we wait for all to finish before re-raising. To model expected failure,
-   return a sentinel value from the child instead of raising.
+   structured concurrency, so a step never outlives its parent. If a child
+   raised and no awaiter ever received the exception, the first such
+   exception is re-raised here: a parent does not silently succeed over a
+   failed child. Siblings are not cancelled; we wait for all to finish
+   before re-raising. A failure that *was* awaited belongs to the awaiting
+   body: catching it is a deliberate recovery (the child's error record is
+   still a cache miss, so a memoized child re-runs next time), re-raising it
+   fails the body on its own. Returning a sentinel from the child remains an
+   option when the failure itself should be cached.
 8. Store the result (or the error, on the exception path).
 9. Emit `end` with size/time metrics.
 
