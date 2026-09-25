@@ -51,11 +51,12 @@ async def claude_stream(
         "--include-partial-messages",
         "--verbose",
         *(extra_args or []),
-        "--",
-        prompt,
     ]
     proc = await asyncio.create_subprocess_exec(
         *args,
+        # The prompt goes through stdin: Linux caps a single argument at
+        # 128 KiB, so a long prompt as argv fails with "Argument list too long".
+        stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         # claude stream-json can emit single JSON lines well over asyncio's
@@ -63,7 +64,10 @@ async def claude_stream(
         # from web searches), which crashes the iterator with LimitOverrunError.
         limit=64 * 1024 * 1024,
     )
-    assert proc.stdout is not None
+    assert proc.stdin is not None and proc.stdout is not None
+    proc.stdin.write(prompt.encode())
+    await proc.stdin.drain()
+    proc.stdin.close()
     async for raw_line in proc.stdout:
         line = raw_line.strip()
         if not line:
