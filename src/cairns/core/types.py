@@ -325,6 +325,10 @@ class TaskSpan:
     record_id: str | None = field(default=None)
     record_path: str | None = field(default=None)
     child_spans: list[TaskSpan] = field(default_factory=lambda: [])
+    # Set when an awaiter received this span's exception. The awaiting body then
+    # owns the failure (it handled it or re-raised it), so the parent's
+    # end-of-body gather must not raise it a second time.
+    error_observed: bool = field(default=False)
 
     # Own-time tracking: wall time minus time spent awaiting child Handles.
     # `suspend_count` counts active Handle awaits (≥1 = this span is suspended);

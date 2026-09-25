@@ -465,6 +465,77 @@ async def test_unawaited_child_failure_does_not_cancel_siblings():
         assert sibling_completed
 
 
+@pytest.mark.asyncio
+async def test_handled_child_failure_does_not_fail_parent():
+    """A parent that awaits a failing child and catches the error recovers."""
+
+    @step
+    async def bad_child() -> str:
+        raise RuntimeError("child failed")
+
+    @step
+    async def parent() -> str:
+        try:
+            return await bad_child()
+        except RuntimeError:
+            return "fallback"
+
+    async with Harness():
+        assert await parent() == "fallback"
+
+
+@pytest.mark.asyncio
+async def test_handled_child_failure_is_retried_next_time():
+    """The handled failure is stored as an error, so a memoized child re-runs."""
+    calls = 0
+
+    @step(memo=True)
+    async def flaky() -> str:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("transient")
+        return "ok"
+
+    @step
+    async def parent() -> str:
+        try:
+            return await flaky()
+        except RuntimeError:
+            return "fallback"
+
+    async with Harness():
+        assert await parent() == "fallback"
+        assert await parent() == "ok"
+        assert calls == 2
+
+
+@pytest.mark.asyncio
+async def test_unawaited_failure_still_propagates_next_to_handled_one():
+    """Handling one child's failure does not swallow an unawaited sibling's."""
+
+    @step
+    async def handled() -> str:
+        raise ValueError("handled")
+
+    @step
+    async def ignored() -> str:
+        raise RuntimeError("ignored")
+
+    @step
+    async def parent() -> str:
+        ignored()
+        try:
+            await handled()
+        except ValueError:
+            pass
+        return "done"
+
+    async with Harness():
+        with pytest.raises(RuntimeError, match="ignored"):
+            await parent()
+
+
 # ── Identity and version ──
 
 

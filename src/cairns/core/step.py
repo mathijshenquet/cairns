@@ -132,7 +132,7 @@ class Handle(Generic[R]):
             )
         awaiter = current_span.get()
         if awaiter is None:
-            return (yield from self._task.__await__())
+            return (yield from self._observe())
         emit_event(WaitEvent(
             seq=awaiter.seq,
             on_kind="span",
@@ -140,7 +140,7 @@ class Handle(Generic[R]):
         ))
         awaiter.enter_await()
         try:
-            result = yield from self._task.__await__()
+            result = yield from self._observe()
         finally:
             awaiter.exit_await()
             # Max-merge the awaited child's virtual-clock skew into the
@@ -152,6 +152,17 @@ class Handle(Generic[R]):
             awaiter.virtual_skew = max(awaiter.virtual_skew, self._span.virtual_skew)
             emit_event(ResumeEvent(seq=awaiter.seq))
         return result
+
+    def _observe(self) -> Generator[Any, Any, R]:
+        """Await the task, marking a failure as delivered to an awaiter."""
+        assert self._task is not None and self._span is not None
+        try:
+            return (yield from self._task.__await__())
+        except asyncio.CancelledError:
+            raise
+        except BaseException:
+            self._span.error_observed = True
+            raise
 
     def cancel(self) -> None:
         """Cancel the underlying task."""
@@ -471,12 +482,13 @@ async def _resolve_args(
 async def _gather_children(span: TaskSpan, *, reraise: bool = False) -> None:
     """Await any still-running child tasks, counting the wait as suspended time.
 
-    With `reraise=True`, surface the first child exception after all siblings
-    finish — closing the structured-concurrency contract so an unawaited child
-    that raised can't be silently swallowed by a successful parent. Siblings
-    are not cancelled mid-flight; we wait for them, then raise. To model
-    expected failure inside a step, return a sentinel value rather than
-    raising (see `tests/test_resume.py::test_resume_fanout_partial_failure`).
+    With `reraise=True`, surface the first exception of a child that no awaiter
+    received, after all siblings finish — closing the structured-concurrency
+    contract so an unawaited child that raised can't be silently swallowed by
+    a successful parent. Siblings are not cancelled mid-flight; we wait for
+    them, then raise. A failure that was delivered to an awaiter is that
+    body's to handle: catching it is a deliberate recovery, re-raising it
+    fails the body on its own.
     """
     if not span.child_tasks:
         return
@@ -484,8 +496,12 @@ async def _gather_children(span: TaskSpan, *, reraise: bool = False) -> None:
     results = await asyncio.gather(*span.child_tasks, return_exceptions=True)
     span.suspended_total += time.monotonic() - t0
     if reraise:
-        for r in results:
-            if isinstance(r, BaseException) and not isinstance(r, asyncio.CancelledError):
+        for child, r in zip(span.child_spans, results):
+            if (
+                isinstance(r, BaseException)
+                and not isinstance(r, asyncio.CancelledError)
+                and not child.error_observed
+            ):
                 raise r
 
 
