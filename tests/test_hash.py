@@ -258,6 +258,40 @@ def test_body_hash_unwraps_decorators():
     assert StepInfo.from_function(wrapper).body_hash == StepInfo.from_function(plain).body_hash
 
 
+def test_body_hash_ignores_decorator_lines(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    # Same body, different decorators: the decorator is how the function is
+    # wrapped, not what it computes, so the fingerprints match.
+    import importlib
+
+    body = "def f(x):\n    return x + 1\n"
+    (tmp_path / "deco_a.py").write_text("def tag(fn):\n    return fn\n\n@tag\n" + body)
+    (tmp_path / "deco_b.py").write_text(
+        "def other(n):\n    return lambda fn: fn\n\n@other(3)\n" + body
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))  # pyright: ignore[reportUnknownMemberType]
+    a = importlib.import_module("deco_a")
+    b = importlib.import_module("deco_b")
+    assert StepInfo.from_function(a.f).body_hash == StepInfo.from_function(b.f).body_hash
+
+
+def test_body_hash_does_not_depend_on_library_internals():
+    # Walking a stdlib function reached `linecache.cache`, which holds the
+    # source of every loaded file, so the fingerprint changed whenever any
+    # file was loaded or edited. Library functions are identified by name.
+    import linecache
+
+    def reads_a_line() -> str:
+        return linecache.getline("some-file", 1)
+
+    before = StepInfo.from_function(reads_a_line).body_hash
+    linecache.cache["<cairns-test>"] = (1, None, ["x\n"], "<cairns-test>")
+    try:
+        after = StepInfo.from_function(reads_a_line).body_hash
+    finally:
+        del linecache.cache["<cairns-test>"]
+    assert before == after
+
+
 def test_body_hash_recursion_terminates_on_cycle():
     # Two module-level functions referencing each other via globals.
     # We simulate via a mutable container since real mutual recursion at

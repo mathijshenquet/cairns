@@ -8,9 +8,11 @@ import builtins
 import hashlib
 import inspect
 import json
+import sys
 import textwrap
 import time
 from dataclasses import dataclass, field
+from pathlib import PurePath
 from typing import Any, Literal, cast
 
 from .hash import compute_cairn_id, resolve_hashable
@@ -18,6 +20,27 @@ from .hash import compute_cairn_id, resolve_hashable
 
 _UNRESOLVED = object()
 _MISSING = object()
+
+def _library_identity(fn: Any) -> str | None:
+    """`module:qualname@version` for a function from the stdlib or an installed
+    distribution, None for user code.
+
+    Library functions are identified by name and version instead of walked:
+    their bodies change only with the interpreter or package, while walking
+    them reaches mutable module state (`inspect.getsource` → `linecache.cache`,
+    which holds the source of every loaded file) and makes the fingerprint
+    depend on unrelated files and on what happened to be loaded.
+    """
+    module_name = getattr(fn, "__module__", None) or ""
+    top = module_name.split(".", 1)[0]
+    qualname = getattr(fn, "__qualname__", getattr(fn, "__name__", "?"))
+    if top in sys.stdlib_module_names:
+        return f"{module_name}:{qualname}@python{sys.version_info.major}.{sys.version_info.minor}"
+    path = getattr(sys.modules.get(module_name), "__file__", None)
+    if path is None or not {"site-packages", "dist-packages"} & set(PurePath(path).parts):
+        return None
+    version = getattr(sys.modules.get(top), "__version__", "?")
+    return f"{module_name}:{qualname}@{version}"
 
 
 def _resolve_name(fn: Any, name: str) -> Any:
@@ -95,6 +118,9 @@ def _encode_ref(name: str, value: Any, _seen: dict[int, str]) -> str:
         qualname = getattr(value, "__qualname__", getattr(value, "__name__", "?"))
         return f"{name}=<class:{module}:{qualname}>"
     if inspect.isfunction(value) or inspect.ismethod(value):
+        library = _library_identity(value)
+        if library is not None:
+            return f"{name}=<library:{library}>"
         sub = StepInfo.from_function(value, _seen=_seen)
         return f"{name}={sub.body_hash}"
     if inspect.isbuiltin(value):
@@ -139,6 +165,14 @@ def _derive_body_fingerprint(fn: Any, _seen: dict[int, str] | None = None) -> st
     try:
         source = textwrap.dedent(inspect.getsource(fn))
         tree = ast.parse(source)
+        node = tree.body[0] if tree.body else None
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.decorator_list:
+            # getsource includes the decorator lines. They wrap the function
+            # (`inspect.unwrap` already peels them) rather than being its body,
+            # and walking them pulls the decorator factory — often the step
+            # machinery itself — into the fingerprint.
+            source = "\n".join(source.splitlines()[node.lineno - 1 :])
+            tree = ast.parse(source)
     except (OSError, TypeError, SyntaxError):
         code = getattr(fn, "__code__", None)
         if code is not None:
