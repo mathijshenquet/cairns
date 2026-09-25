@@ -61,7 +61,10 @@ expressive.
 - **`version`** — "which implementation". Default: a sha256 over the function
   body and its resolved free variables / attribute chains (see `core/types.py`
   for the walker). Changing the body, or a module-level constant it reads,
-  invalidates the hash. Changing an unrelated function does not.
+  invalidates the hash. Changing an unrelated function does not. Decorator
+  lines are not part of the body, and functions from the standard library or
+  an installed distribution count by `module:qualname@version` instead of
+  being walked, so their mutable internals (such as `linecache`) never leak in.
 
 Both are overridable via the decorator kwargs:
 
