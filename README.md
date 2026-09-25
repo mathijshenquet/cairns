@@ -75,6 +75,19 @@ Run it twice. The second run is instant — every `@step(memo=True)` result is
 looked up by cache key. Edit the body of `extract`, rerun: only `extract`
 re-executes, fetches are cache hits.
 
+The derived body hash is a convenience for quick iteration. For expensive or
+long-lived memoized steps (LLM calls, slow fetches, anything a scheduled job
+reuses across weeks), prefer an explicit version and bump it when the step's
+behaviour or prompt changes:
+
+```python
+@step(memo=True, version="2")
+async def summarize(text: str) -> str: ...
+```
+
+A declared version makes the memo match on it alone, so reformatting or
+refactoring unrelated code never throws away results you paid for.
+
 ## CLI
 
 ```sh
