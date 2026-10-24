@@ -38,6 +38,7 @@ async def claude_stream(
     tools: str = "",
     deny_tools: str = DENY_TOOLS,
     extra_args: list[str] | None = None,
+    cwd: str | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """Yield parsed JSON events from `claude -p --output-format stream-json`."""
     args = [
@@ -59,6 +60,7 @@ async def claude_stream(
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        cwd=cwd,
         # claude stream-json can emit single JSON lines well over asyncio's
         # default 64 KiB StreamReader limit (e.g. large tool_result payloads
         # from web searches), which crashes the iterator with LimitOverrunError.
@@ -113,6 +115,7 @@ async def _claude_run(
     model: str,
     system_prompt: str,
     extra_args: list[str] | None,
+    cwd: str | None = None,
 ) -> dict[str, Any]:
     """Stream claude, emit live traces for tool calls + results + cost, return the final result event."""
     # block index → {name, id, partial_json}
@@ -124,6 +127,7 @@ async def _claude_run(
         system_prompt=system_prompt,
         tools=tools,
         extra_args=extra_args,
+        cwd=cwd,
     ):
         etype = event.get("type")
 
@@ -205,6 +209,7 @@ async def claude(
     model: str = MODEL,
     system_prompt: str = SYSTEM_PROMPT,
     extra_args: list[str] | None = None,
+    cwd: str | None = None,
 ) -> str:
     """Run claude, emit live traces for tool calls + results + cost, return final text."""
     event = await _claude_run(
@@ -213,6 +218,7 @@ async def claude(
         model=model,
         system_prompt=system_prompt,
         extra_args=extra_args,
+        cwd=cwd,
     )
     if event.get("is_error"):
         raise RuntimeError(f"claude error: {event.get('result', '(no output)')}")
@@ -226,6 +232,8 @@ async def claude_json(
     tools: str = "",
     model: str = MODEL,
     system_prompt: str = SYSTEM_PROMPT,
+    extra_args: list[str] | None = None,
+    cwd: str | None = None,
 ) -> M:
     """Run claude with `--json-schema` enforcing `schema`, return a validated instance.
 
@@ -239,7 +247,8 @@ async def claude_json(
         tools=tools,
         model=model,
         system_prompt=system_prompt,
-        extra_args=["--json-schema", schema_json],
+        extra_args=["--json-schema", schema_json, *(extra_args or [])],
+        cwd=cwd,
     )
     if event.get("is_error"):
         raise RuntimeError(f"claude error: {event.get('result', '(no output)')}")
